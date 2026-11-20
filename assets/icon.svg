@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- 与加载页精灵球完全同款：纯色块 + 粗描边，无渐变、无高光 -->
+  <defs>
+    <clipPath id="pcBall"><circle cx="32" cy="32" r="25.5"/></clipPath>
+  </defs>
+
+  <!-- 外圈描边 -->
+  <circle cx="32" cy="32" r="27.5" fill="none" stroke="#1b1b22" stroke-width="4"/>
+
+  <!-- 球体：上红下白 + 中间黑带 -->
+  <g clip-path="url(#pcBall)">
+    <rect x="0" y="0" width="64" height="32" fill="#e3353b"/>
+    <rect x="0" y="32" width="64" height="32" fill="#f8f8f8"/>
+    <rect x="0" y="29.96" width="64" height="4.08" fill="#1b1b22"/>
+  </g>
+
+  <!-- 中央按钮 -->
+  <circle cx="32" cy="32" r="11.2" fill="#1b1b22"/>
+  <circle cx="32" cy="32" r="8.3" fill="#f8f8f8"/>
+</svg>

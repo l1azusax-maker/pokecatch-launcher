@@ -1,0 +1,76 @@
+{
+  "name": "pokecatch-launcher",
+  "version": "1.1.0",
+  "description": "Poke'Catch 轻量 PC 启动器",
+  "main": "main.js",
+  "author": "PokeCatch Launcher",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/l1azusax-maker/pokecatch-launcher.git"
+  },
+  "homepage": "https://github.com/l1azusax-maker/pokecatch-launcher",
+  "scripts": {
+    "start": "electron .",
+    "check": "node --check main.js && node --check preload.js && node --check preload-shell.js && node --check preload-notice.js && node --check lib/script-utils.js && node --check lib/concurrency.js && node --check lib/script-backups.js && node --check lib/app-updater.js && node --check scripts/launcher-tab.user.js && node --check scripts/shiny-egg.user.js && node --check scripts/builtin-optimize.user.js",
+    "test": "npm run check && node --test",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^45.4.1",
+    "electron-builder": "^26.18.0"
+  },
+  "overrides": {
+    "minimatch": "11.0.9"
+  },
+  "build": {
+    "appId": "com.pokecatch.launcher",
+    "productName": "PokeCatch",
+    "electronDist": "node_modules/electron/dist",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.js",
+      "preload*.js",
+      "lib/**/*",
+      "scripts/**/*",
+      "assets/**/*"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "l1azusax-maker",
+        "repo": "pokecatch-launcher",
+        "releaseType": "release"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11",
+    "semver": "^7.8.6"
+  }
+}

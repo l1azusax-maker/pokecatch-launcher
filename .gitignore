@@ -1,0 +1,9 @@
+node_modules/
+release*/
+backups/
+.workbuddy/
+dist/
+*.log
+.env
+.env.*
+.DS_Store
