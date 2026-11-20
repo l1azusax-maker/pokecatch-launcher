@@ -150,7 +150,12 @@ function setWindowShapeRects(win, rects) {
 
 // 撤销区域，回到「没有区域」的矩形窗口（空列表 = 恢复矩形）
 function clearWindowShape(win) {
-  if (lastShapeSig === 'none') return;
+  // 新窗口从未设置过区域时不要调用 setShape([])：Windows 仍会走一次窗口区域重建，
+  // 拖动开始的 DWM 过渡帧可能因此露出系统浅色边缘。
+  if (lastShapeSig === '' || lastShapeSig === 'none') {
+    lastShapeSig = 'none';
+    return;
+  }
   lastShapeSig = 'none';
   try { win.setShape([]); } catch (_) {}
 }
@@ -1624,6 +1629,12 @@ function createWindow() {
     minWidth: Math.min(MIN_W, W),
     minHeight: Math.min(MIN_H + PC_TB, H),
     backgroundColor: '#141826',
+    // Windows 拖动/跨屏时会短暂绘制非客户区强调边框；把它锁成与窗口相同的深色，
+    // 并显式关闭系统背景材质/圆角/阴影，避免 DWM 过渡帧露白。
+    accentColor: '#141826',
+    backgroundMaterial: 'none',
+    roundedCorners: false,
+    hasShadow: false,
     frame: false,                    // 无边框，标题栏由窗口层的 shell.html 画
     // 白边的真正根源：Electron 43+ 给无边框可缩放窗口（frame:false + resizable）加了一圈
     // 原生 WS_THICKFRAME「厚调整边框」（左/下/右各 ~8px），渲染器画不到那圈原生区域。
@@ -1652,6 +1663,8 @@ function createWindow() {
   // 原生底色。创建参数里的 backgroundColor 在 Windows 上改尺寸期间未必跟得上，
   // 这里再用 setBackgroundColor 显式落一次，保证任何空窗期都是深色而不是系统白。
   try { mainWindow.setBackgroundColor('#141826'); } catch (_) {}
+  try { mainWindow.setAccentColor('#141826'); } catch (_) {}
+  try { mainWindow.setBackgroundMaterial('none'); } catch (_) {}
   lastShapeSig = '';        // 新窗口：上一轮的区域签名作废
   applyMaximizedClip(mainWindow);   // 创建时几何确定，直接按当前状态裁剪（多屏+最大化裁到客户区，其余保持矩形）
 
