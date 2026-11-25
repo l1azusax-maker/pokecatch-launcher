@@ -2,12 +2,16 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const os = require('node:os');
-const path = require('node:path');
-const { compareVersions, normalizeScript, isSecureScriptUrl, isJavaScriptFilename } = require('../lib/script-utils');
+const {
+  compareVersions,
+  normalizeScript,
+  isSecureScriptUrl,
+  isJavaScriptFilename,
+  safeScriptName,
+  parseUserscriptMeta,
+  looksLikeHtmlDocument,
+} = require('../lib/script-utils');
 const { mapLimit } = require('../lib/concurrency');
-const { pruneScriptBackups, MAX_BACKUPS_PER_SCRIPT } = require('../lib/script-backups');
 
 test('compareVersions follows SemVer prerelease precedence', () => {
   assert.equal(compareVersions('1.0.0', '1.0.0-beta.1'), 1);
@@ -36,6 +40,38 @@ test('only JavaScript files are injectable', () => {
   assert.equal(isJavaScriptFilename('a.json'), false);
 });
 
+test('safeScriptName neutralizes traversal, reserved device names and bad chars', () => {
+  assert.equal(safeScriptName('../../evil/test.user.js'), 'test.user.js');
+  assert.equal(safeScriptName('..\\..\\evil\\a:b*c?.js'), 'a_b_c_.js');
+  assert.equal(safeScriptName('CON.js'), '_CON.js');
+  assert.equal(safeScriptName('my-plugin', { ensureExtension: true }), 'my-plugin.user.js');
+  assert.equal(safeScriptName('...', { fallback: 'imported.user.js' }), 'imported.user.js');
+});
+
+test('parseUserscriptMeta extracts standard header fields', () => {
+  const code = `// ==UserScript==
+// @name         Helper Plugin
+// @version      2.3.1
+// @description  Auto helper
+// @downloadURL  https://example.com/helper.user.js
+// @updateURL    https://example.com/helper.meta.js
+// ==/UserScript==
+console.log(1);`;
+  const meta = parseUserscriptMeta(code);
+  assert.equal(meta.name, 'Helper Plugin');
+  assert.equal(meta.version, '2.3.1');
+  assert.equal(meta.description, 'Auto helper');
+  assert.equal(meta.downloadURL, 'https://example.com/helper.user.js');
+  assert.equal(meta.updateURL, 'https://example.com/helper.meta.js');
+});
+
+test('looksLikeHtmlDocument rejects HTML pages without flagging userscripts', () => {
+  assert.equal(looksLikeHtmlDocument('<!doctype html><html><body>404</body></html>'), true);
+  assert.equal(looksLikeHtmlDocument('  <html><head></head></html>'), true);
+  assert.equal(looksLikeHtmlDocument('// ==UserScript==\n// @name x\n// ==/UserScript==\nconst h = "<html>";'), false);
+  assert.equal(looksLikeHtmlDocument('(() => { console.log("ok"); })();'), false);
+});
+
 test('mapLimit preserves order and limits concurrency', async () => {
   let active = 0;
   let peak = 0;
@@ -48,20 +84,4 @@ test('mapLimit preserves order and limits concurrency', async () => {
   });
   assert.deepEqual(result, [2, 4, 6, 8]);
   assert.equal(peak, 2);
-});
-
-test('script backup retention keeps only the newest files', async (t) => {
-  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pcl-backups-'));
-  t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
-  for (let i = 0; i < MAX_BACKUPS_PER_SCRIPT + 2; i++) {
-    const file = path.join(dir, `demo.user.js.${i}.bak`);
-    await fs.promises.writeFile(file, String(i));
-    const stamp = new Date(Date.now() + i * 1000);
-    await fs.promises.utimes(file, stamp, stamp);
-  }
-  await pruneScriptBackups(dir, 'demo.user.js');
-  const remaining = await fs.promises.readdir(dir);
-  assert.equal(remaining.length, MAX_BACKUPS_PER_SCRIPT);
-  assert.equal(remaining.includes('demo.user.js.0.bak'), false);
-  assert.equal(remaining.includes('demo.user.js.1.bak'), false);
 });

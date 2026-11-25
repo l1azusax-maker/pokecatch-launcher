@@ -27,7 +27,7 @@
   const MARK_CLASS = 'pces-shiny-egg';
   const SPRITE_CLASS = 'pces-shiny-egg-sprite';
   const STYLE_ID = 'pc-shiny-egg-style';
-  const VERSION = '1.0.0';
+  const VERSION = '1.1.0';
 
   // 与游戏 CONFIG.PENSION 对齐（v0.5.07）
   const RATES = Object.freeze({
@@ -96,16 +96,15 @@
     }
   }
 
-  // ---------- 存档（只读） ----------
-  function readSave() {
-    try {
-      const raw = localStorage.getItem(SAVE_KEY);
-      if (!raw) return null;
-      const save = JSON.parse(raw);
-      return save && typeof save === 'object' ? save : null;
-    } catch (_) {
-      return null;   // 读取失败 / JSON 非法 → 静默退出
-    }
+  // ---------- 存档（只读 + 原文缓存，避免 DOM 变化时重复 JSON.parse 整份存档） ----------
+  let lastRawSave = null;
+  let lastParsedSave = null;
+  let lastEggMap = new Map();
+
+  function clearSaveCache() {
+    lastRawSave = null;
+    lastParsedSave = null;
+    lastEggMap = new Map();
   }
 
   function eggMapOf(save) {
@@ -115,6 +114,31 @@
       if (egg && egg.uid != null) map.set(String(egg.uid), egg);
     }
     return map;
+  }
+
+  function readSaveContext() {
+    try {
+      const raw = localStorage.getItem(SAVE_KEY);
+      if (!raw) {
+        clearSaveCache();
+        return { save: null, eggs: lastEggMap };
+      }
+      if (raw === lastRawSave) {
+        return { save: lastParsedSave, eggs: lastEggMap };
+      }
+      const save = JSON.parse(raw);
+      if (!save || typeof save !== 'object') {
+        clearSaveCache();
+        return { save: null, eggs: lastEggMap };
+      }
+      lastRawSave = raw;
+      lastParsedSave = save;
+      lastEggMap = eggMapOf(save);
+      return { save: lastParsedSave, eggs: lastEggMap };
+    } catch (_) {
+      clearSaveCache();
+      return { save: null, eggs: lastEggMap };
+    }
   }
 
   function ensureStyle() {
@@ -166,6 +190,7 @@
     if (observer) { try { observer.disconnect(); } catch (_) {} }
     observer = null;
     grid = null;
+    clearSaveCache();
     if (timer) { clearTimeout(timer); timer = 0; }
     if (discoveryTimer) { clearTimeout(discoveryTimer); discoveryTimer = 0; }
   }
@@ -176,15 +201,17 @@
 
     const next = document.querySelector('#pen-eggs');
     if (next !== grid) {
-      // 蛋网格被替换：先丢掉旧观察器，避免泄漏到已移除的节点
       if (observer) { try { observer.disconnect(); } catch (_) {} }
       if (timer) { clearTimeout(timer); timer = 0; }
       grid = next;
       if (grid) {
         observer = observer || new MutationObserver(scheduleScan);
+        // 不监听 characterData：孵化倒计时每秒改文本，不需要重扫或重新解析存档。
         observer.observe(grid, {
-          childList: true, subtree: true, characterData: true,
-          attributes: true, attributeFilter: ['data-egg'],
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: ['data-egg'],
         });
       }
     }
@@ -192,8 +219,7 @@
     const cards = grid.querySelectorAll('.pen-egg[data-egg]');
     if (!cards.length) return;
 
-    const save = readSave();
-    const eggs = eggMapOf(save);
+    const { save, eggs } = readSaveContext();
 
     for (const card of cards) {
       const egg = eggs.get(card.dataset.egg);
@@ -230,7 +256,7 @@
     const want = on !== false;
     if (want === enabled) {
       if (want) {
-        scheduleScan();   // 已经开着也重扫一次，处理「刚进培育屋」
+        scheduleScan();
         scheduleDiscovery();
       }
       return;

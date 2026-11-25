@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; font-src 'self'; img-src data:">
+  <title>连接失败 · Poke'Catch</title>
+  <style>
+    @font-face {
+      font-family: "Jersey 15";
+      src: url("jersey-15.woff2") format("woff2");
+      font-display: swap;
+    }
+    @font-face {
+      font-family: "Jersey 10";
+      src: url("jersey-10.woff2") format("woff2");
+      font-display: swap;
+    }
+    :root {
+      --bg: #141826;
+      --panel: #1c2030;
+      --panel-2: #252a3d;
+      --line: #333a52;
+      --text: #eef1f8;
+      --muted: #9aa3bb;
+      --red: #e3353b;
+      --blue: #2b8cff;
+      --font: "Jersey 10", system-ui, sans-serif;
+      --font-title: "Jersey 15", system-ui, sans-serif;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100%; height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      user-select: none;
+      -webkit-font-smoothing: antialiased;
+    }
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .card {
+      width: min(440px, 100%);
+      background: var(--panel);
+      border: 2px solid var(--line);
+      border-radius: 14px;
+      overflow: hidden;
+    }
+    .head {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 16px;
+      background: linear-gradient(90deg, color-mix(in srgb, var(--red) 36%, transparent), transparent 78%);
+      border-bottom: 2px solid color-mix(in srgb, var(--red) 45%, var(--line));
+    }
+    .head svg { width: 26px; height: 26px; flex: none; }
+    .head h1 {
+      font-family: var(--font-title);
+      font-size: 24px;
+      font-weight: 700;
+      letter-spacing: .04em;
+    }
+    .body {
+      padding: 18px 18px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .summary {
+      font-size: 18px;
+      color: var(--text);
+      line-height: 1.4;
+    }
+    .meta {
+      padding: 10px 12px;
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--muted);
+      word-break: break-all;
+      user-select: text;
+    }
+    .actions {
+      display: flex;
+      gap: 10px;
+    }
+    .btn {
+      flex: 1;
+      min-height: 42px;
+      padding: 8px 14px;
+      border-radius: 10px;
+      border: 2px solid transparent;
+      font-family: var(--font);
+      font-size: 17px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: filter .15s ease, transform .08s;
+    }
+    .btn.primary {
+      color: #fff;
+      background: linear-gradient(90deg,
+        color-mix(in srgb, var(--blue) 78%, var(--panel)),
+        color-mix(in srgb, var(--blue) 42%, var(--panel)));
+      border-color: color-mix(in srgb, var(--blue) 72%, transparent);
+      box-shadow: inset 0 -3px #00000040;
+    }
+    .btn.primary:hover { filter: brightness(1.08); }
+    .btn:active { transform: translateY(1px); }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="head">
+      <svg viewBox="0 0 64 64" aria-hidden="true">
+        <defs><clipPath id="offClip"><circle cx="32" cy="32" r="25.5"/></clipPath></defs>
+        <circle cx="32" cy="32" r="27.5" fill="none" stroke="#1b1b22" stroke-width="4"/>
+        <g clip-path="url(#offClip)">
+          <rect x="0" y="0" width="64" height="32" fill="#e3353b"/>
+          <rect x="0" y="32" width="64" height="32" fill="#f8f8f8"/>
+          <rect x="0" y="29.96" width="64" height="4.08" fill="#1b1b22"/>
+        </g>
+        <circle cx="32" cy="32" r="11.2" fill="#1b1b22"/>
+        <circle cx="32" cy="32" r="8.3" fill="#f8f8f8"/>
+      </svg>
+      <h1>游戏加载失败</h1>
+    </div>
+    <div class="body">
+      <div class="summary">无法连接到游戏服务器，请检查网络后重试。</div>
+      <div class="meta" id="meta"></div>
+      <div class="actions">
+        <button class="btn primary" id="retryBtn">重新连接（F5）</button>
+      </div>
+    </div>
+  </div>
+  <script>
+    (function () {
+      var data = { code: '', desc: '', url: '' };
+      try {
+        var raw = new URLSearchParams(location.search).get('d');
+        if (raw) data = JSON.parse(raw);
+      } catch (_) {}
+
+      var metaLines = [];
+      if (data.url) metaLines.push('地址：' + data.url);
+      if (data.desc || data.code) {
+        metaLines.push('原因：' + [data.desc, data.code ? '(' + data.code + ')' : ''].filter(Boolean).join(' '));
+      }
+      document.getElementById('meta').textContent = metaLines.join('\n') || '网络请求失败';
+
+      function retry() {
+        if (window.launcher && typeof window.launcher.offlineRetry === 'function') {
+          window.launcher.offlineRetry();
+        }
+      }
+      document.getElementById('retryBtn').addEventListener('click', retry);
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); retry(); }
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -1,35 +1,22 @@
 // ============================================================
 // 启动器设置（并进游戏设置面板的「通用」Tab）
 //
-// 以前这里会注册一个独立的「扩展 · 启动器」Tab；现在不占 Tab 了：
-// 「游戏 / 油猴脚本 / 关于」三块直接追加在「通用」页原生内容下面。
-//
-// 复用游戏现有结构（不要自己造轮子，游戏改版时也能跟着变）：
-//   .opt-modal > .gd-in > .gd-wrap > nav.gd-nav + .gd-page
-//   Tab 项：button.gd-item[data-p="general"]（通用）
-//   内容：.gd-page > .op-page > h3 + .op-card / .op-group > h5 + .op-card
-//   行：.op-row(.op-sw) · 按钮：.btn / .btn.small / .btn.ghost / .btn.gold
-//
-// 游戏每次切 Tab 都会重建 .gd-page（T()），所以这里持续盯着 DOM：
-// 只要「通用」页上没有我们那段就补回去。
+// 「启动器设置 / 油猴脚本 / 关于」三块追加在「通用」页原生内容下面。
+// 复用游戏现有结构（.opt-modal / .op-group / .op-card / .op-row / .op-sw / .btn）。
 // ============================================================
 (() => {
   'use strict';
 
-  const L = window.launcher;          // preload 暴露的启动器 API；不在启动器里就退出
+  const L = window.launcher;
   if (!L) return;
   if (window.__pcLauncherSettingsInstalled) return;
   window.__pcLauncherSettingsInstalled = true;
 
-  const GENERAL = 'general';          // 游戏「通用」Tab 的 data-p
-  const HOST_ID = 'pc-lx-sections';   // 我们那段容器的 id
+  const GENERAL = 'general';
+  const HOST_ID = 'pc-lx-sections';
 
-  // 只补游戏没有的原子样式，其余全部沿用游戏的设计令牌
   const CSS = `
-    /* 追加在「通用」页原生设置下面，给一点上间距 */
     #${HOST_ID} { display: block; margin-top: var(--s3, 12px); }
-    /* 四个按钮平分一行：等宽、撑满、文字居中。
-       注意 flex-basis 必须是 0，否则长标签会把这一行撑歪。 */
     .pc-lx-actions {
       display: flex;
       flex-wrap: nowrap;
@@ -46,7 +33,8 @@
       white-space: nowrap;
     }
     .pc-lx-empty { padding: 18px 16px; text-align: center; color: var(--muted); font-size: var(--fs-caption, 14px); }
-    .pc-lx-row .t b { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .pc-lx-row .t b { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .pc-lx-row.disabled .t b, .pc-lx-row.disabled .t small { opacity: .6; }
     .pc-lx-badge {
       display: inline-block;
       font-size: var(--fs-micro, 12px);
@@ -58,12 +46,42 @@
       color: var(--text-2);
       font-weight: 600;
     }
-    .pc-lx-badge.on {
-      background: color-mix(in srgb, var(--green, #4cc96a) 18%, var(--panel));
-      border-color: color-mix(in srgb, var(--green, #4cc96a) 45%, transparent);
-      color: var(--text);
+    .pc-lx-badge.off {
+      background: color-mix(in srgb, var(--muted, #9aa3bb) 16%, var(--panel));
+      border-color: var(--line);
+      color: var(--muted);
     }
-    .pc-lx-del { padding: 0 10px; height: 30px; min-height: 30px; font-size: var(--fs-caption, 14px); }
+    .pc-lx-badge.err {
+      background: color-mix(in srgb, var(--red, #e3353b) 20%, var(--panel));
+      border-color: color-mix(in srgb, var(--red, #e3353b) 55%, transparent);
+      color: #ff9c9f;
+    }
+    .pc-lx-err { color: #ff8e92; }
+    .pc-lx-row-acts {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex: none;
+    }
+    .pc-lx-mini {
+      padding: 0 10px;
+      height: 30px;
+      min-height: 30px;
+      font-size: var(--fs-caption, 14px);
+    }
+    .pc-lx-mini.danger-armed {
+      border-color: color-mix(in srgb, var(--red, #e3353b) 80%, transparent);
+      background: color-mix(in srgb, var(--red, #e3353b) 22%, var(--panel));
+      color: #fff;
+    }
+    .pc-lx-swbtn {
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 2px;
+      border: 0;
+      background: transparent;
+    }
     .pc-lx-form { margin-top: 10px; }
     .pc-lx-form .op-row { padding: 8px 10px; gap: 8px; cursor: default; }
     .pc-lx-input {
@@ -93,11 +111,26 @@
 
   // ---------- 状态 ----------
   const state = {
-    settings: { keepActive: true, shinyEgg: true },
+    settings: {
+      keepActive: true,
+      shinyEgg: true,
+      minimizeToTray: false,
+    },
     scripts: [],
+    scriptsError: '',
     showUrl: false,
     appVer: '',
+    appUpdate: {
+      state: 'idle',
+      currentVersion: '',
+      availableVersion: '',
+      percent: 0,
+      message: '',
+    },
+    armedDelete: '',
   };
+
+  let armedTimer = 0;
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -115,7 +148,6 @@
     (document.head || document.documentElement).appendChild(st);
   }
 
-  // 用游戏自己的 toast（#toasts + .toast），保持观感一致
   function toast(msg) {
     try {
       const host = document.getElementById('toasts');
@@ -137,10 +169,26 @@
     const p = (n) => String(n).padStart(2, '0');
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
   }
+
   function shortUrl(u) {
     const s = String(u || '');
-    return s.length > 56 ? s.slice(0, 34) + '…' + s.slice(-19) : s;
+    return s.length > 52 ? s.slice(0, 30) + '…' + s.slice(-19) : s;
   }
+
+  async function mapLimit(items, limit, worker) {
+    const list = Array.from(items || []);
+    const out = new Array(list.length);
+    let cursor = 0;
+    const width = Math.max(1, Math.min(limit, list.length));
+    await Promise.all(Array.from({ length: width }, async () => {
+      while (cursor < list.length) {
+        const idx = cursor++;
+        out[idx] = await worker(list[idx], idx);
+      }
+    }));
+    return out;
+  }
+
   // ---------- 页面片段 ----------
   function switchRow(key, title, desc, on) {
     return `<div class="op-row${on ? ' on' : ''}" data-pc-sw="${key}" role="switch" aria-checked="${on ? 'true' : 'false'}" tabindex="0">
@@ -148,35 +196,104 @@
     </div>`;
   }
 
+  function bindSwitchRow(row) {
+    if (!row || row.__pcSwBound) return;
+    row.__pcSwBound = true;
+    const toggle = () => {
+      const key = row.getAttribute('data-pc-sw');
+      const on = !row.classList.contains('on');
+      row.classList.toggle('on', on);
+      row.setAttribute('aria-checked', on ? 'true' : 'false');
+      state.settings[key] = on;
+      if (key === 'shinyEgg' && window.__pcShinyEggPreview) {
+        try { window.__pcShinyEggPreview.set(on); } catch (_) {}
+      }
+      // 仅提交当前开关字段，避免覆盖标题栏/托盘刚改动的静音或置顶状态。
+      Promise.resolve(L.saveSettings({ [key]: on })).then((ok) => {
+        if (ok === false) toast('保存失败');
+        else if (key === 'keepActive') toast(on ? '最小化时保持在线' : '最小化时将按离线处理');
+        else if (key === 'shinyEgg') toast(on ? '已开启异色蛋预览' : '已关闭异色蛋预览');
+        else if (key === 'minimizeToTray') toast(on ? '关闭窗口时将收进系统托盘' : '关闭窗口时直接退出启动器');
+      }).catch(() => toast('保存失败'));
+    };
+    row.addEventListener('click', toggle);
+    row.addEventListener('keydown', (e) => {
+      if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); toggle(); }
+    });
+  }
+
   function scriptRow(s) {
+    const enabled = s.enabled !== false;
     const badges = [];
     if (s.version) badges.push(`<span class="pc-lx-badge">v${esc(s.version)}</span>`);
+    if (!enabled) badges.push('<span class="pc-lx-badge off">已停用</span>');
+    if (s.lastError) badges.push(`<span class="pc-lx-badge err" title="${esc(s.lastError)}">注入异常</span>`);
+
     const meta = [];
     if (s.mtime) meta.push('更新于 ' + fmtTime(s.mtime));
     if (s.sourceUrl) meta.push(shortUrl(s.sourceUrl));
-    return `<div class="op-row op-static pc-lx-row">
+    const errText = s.lastError ? `<div class="pc-lx-err">错误：${esc(s.lastError.slice(0, 90))}</div>` : '';
+
+    const isDelArmed = state.armedDelete === s.name;
+
+    // 注意：游戏原生开关样式依赖父级 .op-row.on 来激活 .op-sw 的开启态。
+    return `<div class="op-row op-static pc-lx-row${enabled ? ' on' : ' disabled'}">
       <span class="t">
         <b>${esc(s.name)}${badges.join('')}</b>
-        <small>${esc(meta.join(' · '))}</small>
+        <small>${esc(meta.join(' · '))}${errText}</small>
       </span>
-      <button class="btn small ghost pc-lx-del" data-pc="del" data-name="${esc(s.name)}">删除</button>
+      <div class="pc-lx-row-acts">
+        <button class="pc-lx-swbtn" data-pc="toggleScript" data-name="${esc(s.name)}" data-enabled="${enabled ? '1' : '0'}" role="switch" aria-checked="${enabled ? 'true' : 'false'}" title="${enabled ? '点击停用脚本' : '点击启用脚本'}">
+          <span class="op-sw"></span>
+        </button>
+        <button class="btn small ghost pc-lx-mini${isDelArmed ? ' danger-armed' : ''}" data-pc="del" data-name="${esc(s.name)}">${isDelArmed ? '确认删?' : '删除'}</button>
+      </div>
     </div>`;
   }
 
-  // 「游戏 / 油猴脚本 / 关于」三块（追加在「通用」页原生内容下面）
+  function appUpdateRowHTML() {
+    const u = state.appUpdate || {};
+    const verPrefix = state.appVer ? 'v' + esc(state.appVer) + ' · ' : '';
+    let desc = `${verPrefix}作者：梓贱 · 设置已并入游戏设置面板`;
+    if (u.message) desc = `${verPrefix}${esc(u.message)}`;
+
+    let btnHTML = '<button class="btn small ghost pc-lx-mini" data-pc="checkAppUpdate">检查更新</button>';
+    if (u.state === 'checking') {
+      btnHTML = '<button class="btn small ghost pc-lx-mini" disabled>检查中…</button>';
+    } else if (u.state === 'available' || u.state === 'downloading') {
+      const pct = Number.isFinite(u.percent) ? u.percent : 0;
+      btnHTML = `<button class="btn small ghost pc-lx-mini" disabled>下载中 ${pct}%</button>`;
+    } else if (u.state === 'downloaded') {
+      btnHTML = '<button class="btn small gold pc-lx-mini" data-pc="installAppUpdate">重启安装</button>';
+    } else if (u.state === 'unsupported') {
+      btnHTML = '<button class="btn small ghost pc-lx-mini" disabled>开发模式</button>';
+    }
+
+    return `<div class="op-row op-static">
+      <span class="t"><b>Poke'Catch 启动器</b><small>${desc}</small></span>
+      <div class="pc-lx-row-acts">${btnHTML}</div>
+    </div>`;
+  }
+
   function sectionsHTML() {
     const s = state.settings;
     const scripts = state.scripts || [];
 
-    const scriptsBody = scripts.length
-      ? scripts.map(scriptRow).join('')
-      : '<div class="pc-lx-empty">还没有导入脚本</div>';
+    let scriptsBody;
+    if (state.scriptsError) {
+      scriptsBody = `<div class="pc-lx-empty">读取脚本失败：${esc(state.scriptsError)}</div>`;
+    } else {
+      scriptsBody = scripts.length
+        ? scripts.map(scriptRow).join('')
+        : '<div class="pc-lx-empty">还没有导入脚本</div>';
+    }
 
     return `<div class="op-group">
-        <h5>游戏</h5>
+        <h5>启动器设置</h5>
         <div class="op-card">
-          ${switchRow('keepActive', '最小化时保持在线', '最小化或被遮挡时，游戏不会判定你离开，也不结算离线进度', s.keepActive !== false)}
           ${switchRow('shinyEgg', '提前显示异色蛋', '培育屋的蛋按存档直接判定并标出异色（只读存档，不改任何数据）', s.shinyEgg !== false)}
+          ${switchRow('keepActive', '最小化时保持在线', '最小化或被遮挡时，游戏不会判定你离开，也不结算离线进度', s.keepActive !== false)}
+          ${switchRow('minimizeToTray', '关闭窗口时收进托盘', '点击右上角关闭按钮后隐藏到系统托盘继续挂机，可在托盘右键退出', !!s.minimizeToTray)}
         </div>
       </div>
 
@@ -202,41 +319,74 @@
       <div class="op-group">
         <h5>关于</h5>
         <div class="op-card">
+          ${appUpdateRowHTML()}
           <div class="op-row op-static">
-            <span class="t"><b>Poke'Catch 启动器</b><small>${state.appVer ? 'v' + esc(state.appVer) + ' · ' : ''}作者：梓贱 · 设置已并入游戏设置面板</small></span>
-          </div>
-          <div class="op-row op-static">
-            <span class="t"><b>快捷键</b><small><kbd>F11</kbd> 全屏 · <kbd>F12</kbd> 打开 / 关闭这个面板</small></span>
+            <span class="t"><b>快捷键</b><small><kbd>F5</kbd> 刷新 · <kbd>F11</kbd> 全屏 · <kbd>F12</kbd> 设置 · <kbd>Ctrl+M</kbd> 静音</small></span>
           </div>
         </div>
       </div>`;
   }
 
   // ---------- 数据 ----------
+  function applySettingsToState(s) {
+    if (!s || typeof s !== 'object') return;
+    state.settings = {
+      keepActive: s.keepActive !== false,
+      shinyEgg: s.shinyEgg !== false,
+      minimizeToTray: s.minimizeToTray === true,
+    };
+    if (window.__pcShinyEggPreview) {
+      try { window.__pcShinyEggPreview.set(state.settings.shinyEgg); } catch (_) {}
+    }
+  }
+
   async function refreshSettings() {
     try {
       const s = await L.getSettings();
-      state.settings = {
-        keepActive: !s || s.keepActive !== false,
-        shinyEgg: !s || s.shinyEgg !== false,
-      };
+      applySettingsToState(s);
     } catch (_) {}
   }
+
   async function refreshScripts() {
-    try { state.scripts = (await L.readScripts()) || []; } catch (_) { state.scripts = []; }
+    try {
+      state.scripts = await L.readScripts();
+      state.scriptsError = '';
+    } catch (err) {
+      state.scriptsError = err.message;
+    }
+  }
+
+  async function refreshAppUpdateState() {
+    try {
+      if (typeof L.getAppUpdateState === 'function') {
+        const st = await L.getAppUpdateState();
+        if (st && typeof st === 'object') state.appUpdate = { ...state.appUpdate, ...st };
+      }
+    } catch (_) {}
   }
 
   function hostEl() {
     return document.querySelector(`.opt-modal .gd-page #${HOST_ID}`);
   }
 
-  // 当前是否停在「通用」Tab（游戏的 data-p 是 general）
   function onGeneralTab() {
     const nav = document.querySelector('.opt-modal .gd-nav');
     return !!(nav && nav.querySelector(`[data-p="${GENERAL}"].on`));
   }
 
-  // 重新渲染我们那段（只在它已经挂着的时候动 DOM）
+  function armDelete(name) {
+    if (armedTimer) clearTimeout(armedTimer);
+    state.armedDelete = name;
+    render();
+    armedTimer = setTimeout(() => {
+      armedTimer = 0;
+      if (state.armedDelete) {
+        state.armedDelete = '';
+        render();
+      }
+    }, 3500);
+  }
+
   function render() {
     const host = hostEl();
     if (!host) return;
@@ -248,7 +398,6 @@
     }
   }
 
-  // 关掉设置面板（导入/更新后要先收起，再弹启动器的刷新提示）
   async function closePanel() {
     const clickX = () => {
       const m = document.querySelector('.opt-modal');
@@ -256,7 +405,6 @@
       if (x) { try { x.click(); } catch (_) {} }
     };
     clickX();
-    // 万一还有排队中的 open()，关掉后会立刻再弹出来，这里多关几次
     for (let i = 0; i < 4 && document.querySelector('.opt-modal'); i++) {
       await sleep(70);
       clickX();
@@ -272,42 +420,25 @@
 
   // ---------- 交互 ----------
   function bindSections(host) {
-    // 开关
-    host.querySelectorAll('[data-pc-sw]').forEach((row) => {
-      const toggle = () => {
-        const key = row.getAttribute('data-pc-sw');
-        const on = !row.classList.contains('on');
-        row.classList.toggle('on', on);
-        row.setAttribute('aria-checked', on ? 'true' : 'false');
-        state.settings[key] = on;
-        // 异色蛋预览：设置页只管开关，判定/标记的活在 shiny-egg.user.js 里
-        if (key === 'shinyEgg' && window.__pcShinyEggPreview) {
-          try { window.__pcShinyEggPreview.set(on); } catch (_) {}
-        }
-        Promise.resolve(L.saveSettings({ ...state.settings })).then((ok) => {
-          if (ok === false) toast('保存失败');
-          else if (key === 'keepActive') toast(on ? '最小化时保持在线' : '最小化时将按离线处理');
-          else if (key === 'shinyEgg') toast(on ? '已开启异色蛋预览' : '已关闭异色蛋预览');
-        }).catch(() => toast('保存失败'));
-      };
-      row.addEventListener('click', toggle);
-      row.addEventListener('keydown', (e) => {
-        if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); toggle(); }
-      });
-    });
+    host.querySelectorAll('[data-pc-sw]').forEach(bindSwitchRow);
 
     const act = (name) => host.querySelector(`[data-pc="${name}"]`);
 
     // 导入脚本（文件）
     act('import') && (act('import').onclick = async () => {
-      const picked = await L.pickScriptFile();
+      let picked;
+      try {
+        picked = await L.pickScriptFile();
+      } catch (err) {
+        toast('导入失败：' + err.message);
+        return;
+      }
       if (!picked || !picked.ok || !picked.items || !picked.items.length) {
         if (picked && picked.failed && picked.failed.length) toast('导入失败：' + picked.failed[0].error);
         return;
       }
-      const items = picked.items;
       await refreshScripts();
-      await promptRefresh('import', items);
+      await promptRefresh('import', picked.items);
     });
 
     // 从链接导入
@@ -322,7 +453,7 @@
       const input = host.querySelector('[data-pc="url"]');
       const url = (input && input.value || '').trim();
       if (!url) return toast('请输入脚本链接');
-      if (!/^https?:\/\//i.test(url)) return toast('链接需以 http(s):// 开头');
+      if (!/^https:\/\//i.test(url)) return toast('脚本链接必须以 https:// 开头');
       const btn = act('urlGo');
       const old = btn.textContent;
       btn.textContent = '下载中…';
@@ -336,7 +467,7 @@
       await promptRefresh('import', [{ name: res.name, to: res.version || '' }]);
     });
 
-    // 检查全部更新
+    // 并发检查全部脚本更新（实时进度）
     act('checkAll') && (act('checkAll').onclick = async () => {
       const withUrl = (state.scripts || []).filter((s) => s.sourceUrl);
       const noUrl = (state.scripts || []).length - withUrl.length;
@@ -347,17 +478,29 @@
       }
       const btn = act('checkAll');
       const old = btn.textContent;
-      btn.textContent = '检查中…';
       btn.disabled = true;
+      let done = 0;
+      const updateProgress = () => { btn.textContent = `检查中 (${done}/${withUrl.length})…`; };
+      updateProgress();
+
+      const results = await mapLimit(withUrl, 3, async (s) => {
+        try {
+          const res = await L.checkScriptUpdate(s.name);
+          return { script: s, res };
+        } catch (err) {
+          return { script: s, res: { ok: false, error: err && err.message ? err.message : '检测失败' } };
+        } finally {
+          done++;
+          updateProgress();
+        }
+      });
+
       const updated = [];
       const failed = [];
       let current = 0;
       let latestVer = '';
-      for (const s of withUrl) {
-        const res = await L.checkScriptUpdate(s.name);
+      for (const { script: s, res } of results) {
         if (!res || !res.ok) {
-          // 以前这里直接 continue，下载超时 / 404 全都无声吞掉，
-          // 表现就是「点了没反应、也检测不到」。
           failed.push(`${s.nameFromMeta || s.name}：${(res && res.error) || '检测失败'}`);
           continue;
         }
@@ -380,23 +523,79 @@
     });
 
     // 打开脚本目录
-    act('openDir') && (act('openDir').onclick = () => { try { L.openScriptsDir(); } catch (_) {} });
+    act('openDir') && (act('openDir').onclick = async () => {
+      try {
+        const result = await L.openScriptsDir();
+        if (!result.ok) toast('打开脚本目录失败：' + result.error);
+      } catch (err) {
+        toast('打开脚本目录失败：' + err.message);
+      }
+    });
 
-    // 删除脚本
+    // 单脚本启用/禁用
+    host.querySelectorAll('[data-pc="toggleScript"]').forEach((btn) => {
+      btn.onclick = async () => {
+        const name = btn.getAttribute('data-name');
+        const nextEnabled = btn.getAttribute('data-enabled') !== '1';
+        if (!name) return;
+        const res = await L.toggleScriptEnabled(name, nextEnabled);
+        if (res && res.ok) {
+          await refreshScripts();
+          render();
+          toast(`${nextEnabled ? '已启用' : '已停用'} ${name}，按 F5 刷新后生效`);
+        } else {
+          toast('切换失败：' + ((res && res.error) || '未知错误'));
+        }
+      };
+    });
+
+    // 删除脚本（二次确认防误删）
     host.querySelectorAll('[data-pc="del"]').forEach((btn) => {
       btn.onclick = async () => {
         const name = btn.getAttribute('data-name');
         if (!name) return;
+        if (state.armedDelete !== name) {
+          armDelete(name);
+          toast('再次点击「确认删?」删除该脚本');
+          return;
+        }
+        state.armedDelete = '';
         const res = await L.deleteScript(name);
-        if (res && res.ok) { toast('已删除 ' + name); await refreshScripts(); render(); }
-        else toast('删除失败：' + ((res && res.error) || '未知错误'));
+        if (res && res.ok) {
+          toast(`已删除 ${name}，按 F5 刷新后生效`);
+          await refreshScripts();
+          render();
+        } else {
+          toast('删除失败：' + ((res && res.error) || '未知错误'));
+          render();
+        }
       };
+    });
+
+    // 启动器自身更新检查 / 安装
+    act('checkAppUpdate') && (act('checkAppUpdate').onclick = async () => {
+      if (typeof L.checkAppUpdate !== 'function') return;
+      state.appUpdate = { ...state.appUpdate, state: 'checking', message: '正在检查更新…' };
+      render();
+      try {
+        const res = await L.checkAppUpdate();
+        if (res && typeof res === 'object') {
+          state.appUpdate = { ...state.appUpdate, ...res };
+          render();
+          if (res.message) toast(res.message);
+        }
+      } catch (err) {
+        toast('检查更新失败：' + err.message);
+      }
+    });
+    act('installAppUpdate') && (act('installAppUpdate').onclick = async () => {
+      if (typeof L.installAppUpdate !== 'function') return;
+      const res = await L.installAppUpdate();
+      if (res && !res.ok) toast(res.error || '重启安装失败');
     });
   }
 
   // ---------- 注入到「通用」页 ----------
-  // 不占 Tab：把三块追加到「通用」页 .op-page 的最后。
-  // 游戏切 Tab / 改设置都会重建 .gd-page，所以这里每 600ms 兜一次。
   function syncSections() {
     ensureStyle();
     const modal = document.querySelector('.opt-modal');
@@ -405,7 +604,7 @@
     if (!page || !onGeneralTab()) return;
     const host0 = page.querySelector('.op-page');
     if (!host0) return;
-    if (page.querySelector(`#${HOST_ID}`)) return;   // 已经在
+    if (page.querySelector(`#${HOST_ID}`)) return;
     const wrap = document.createElement('div');
     wrap.id = HOST_ID;
     wrap.className = 'pc-lx';
@@ -414,7 +613,6 @@
     bindSections(wrap);
   }
 
-  // 切到「通用」Tab（已经在就不动，避免无谓重建）
   function selectGeneral() {
     const modal = document.querySelector('.opt-modal');
     if (!modal) return false;
@@ -427,7 +625,6 @@
     return !!hostEl();
   }
 
-  // 主进程用这两个函数响应 F12（打开 / 关闭）
   async function openSettings() {
     ensureStyle();
     ensureRootObserver();
@@ -436,25 +633,19 @@
       const r = document.getElementById('modal-root');
       return !!(r && r.classList.contains('open'));
     };
-    // 别的弹窗（教程/提示/开场）还开着时，游戏的 open() 会被排进队列，
-    // 先等它自己消失再点，免得点出一个「排在后面」的重复面板
     for (let attempt = 0; attempt < 3 && !hasModal(); attempt++) {
       for (let i = 0; i < 25 && !hasModal() && rootOpen(); i++) await sleep(80);
       if (hasModal()) break;
       const gear = document.querySelector('#options-btn');
       if (gear && typeof gear.onclick === 'function') { try { gear.click(); } catch (_) {} }
-      // 游戏冷启动时 open() 可能要 1s 以上才渲染；2s 还没出来就再点一次
       for (let i = 0; i < 25 && !hasModal(); i++) await sleep(80);
     }
     if (!hasModal()) return false;
-    // 游戏 open() 之后还会异步重渲染默认页，把我们注入的那段盖掉，
-    // 所以这里多断言几轮，直到「通用」页上稳定挂着我们的三块
     for (let i = 0; i < 20; i++) {
       if (!document.querySelector('.opt-modal')) return false;
       if (selectGeneral() && i >= 4) break;
       await sleep(70);
     }
-    // 不给面板做任何滚动：设置一打开就停在最上面（用户明确要求别自动往下滚）
     const page = document.querySelector('.opt-modal .gd-page');
     if (page) page.scrollTop = 0;
     return !!hostEl();
@@ -463,7 +654,6 @@
   window.__pcOpenLauncherTab = function () { return openSettings(); };
   window.__pcOpenLauncherSettings = window.__pcOpenLauncherTab;
 
-  // F12：面板开着且正停在「通用」（能看到我们这段）就收起，否则打开并切过去
   window.__pcToggleLauncherSettings = async function () {
     ensureStyle();
     if (document.querySelector('.opt-modal') && onGeneralTab() && hostEl()) {
@@ -476,14 +666,14 @@
   // ---------- 启动 ----------
   ensureStyle();
   refreshSettings().then(() => { if (hostEl()) render(); });
+  refreshAppUpdateState().then(() => { if (hostEl()) render(); });
   try {
     Promise.resolve(L.appInfo && L.appInfo())
       .then((info) => { state.appVer = (info && info.version) || ''; if (hostEl()) render(); })
       .catch(() => {});
   } catch (_) {}
-  refreshScripts();
+  refreshScripts().then(() => { if (hostEl()) render(); });
 
-  // 面板内部变化由观察器驱动；低频定时器只负责发现游戏替换了 #modal-root 本身。
   let observedRoot = null;
   let rootObserver = null;
   let syncQueued = false;
@@ -509,12 +699,64 @@
   ensureRootObserver();
   setInterval(ensureRootObserver, 5000);
 
-  // 启动自检在后台更新了脚本：列表跟着刷新
   if (typeof L.onScriptsUpdated === 'function') {
     const unsubscribe = L.onScriptsUpdated(async () => {
       await refreshScripts();
       if (hostEl()) { render(); toast('脚本已在后台更新'); }
     });
     window.addEventListener('pagehide', unsubscribe, { once: true });
+  }
+
+  if (typeof L.onSettingsChanged === 'function') {
+    const unsubscribe = L.onSettingsChanged((next) => {
+      applySettingsToState(next);
+      if (hostEl()) render();
+    });
+    window.addEventListener('pagehide', unsubscribe, { once: true });
+  }
+
+  if (typeof L.onAppUpdateState === 'function') {
+    const unsubscribe = L.onAppUpdateState((next) => {
+      if (next && typeof next === 'object') {
+        state.appUpdate = { ...state.appUpdate, ...next };
+        if (hostEl()) render();
+      }
+    });
+    window.addEventListener('pagehide', unsubscribe, { once: true });
+  }
+
+  // ---------- 培育屋「快要孵化了」蛋数量监听（直接读取游戏源码只读接口） ----------
+  if (typeof L.reportReadyEggs === 'function') {
+    let lastReportedReadyEggs = -1;
+    const countReadyEggs = () => {
+      try {
+        const G = window.Game;
+        if (!G || typeof G.pension !== 'function') return null;
+        const pen = G.pension();
+        const eggs = Array.isArray(pen && pen.eggs) ? pen.eggs : [];
+        const now = typeof G.time === 'function' ? G.time() : Date.now();
+        let ready = 0;
+        for (const egg of eggs) {
+          if (!egg) continue;
+          if (typeof G.eggReady === 'function') {
+            if (G.eggReady(egg, now)) ready++;
+          } else if (Number.isFinite(egg.hatchAt) && now >= egg.hatchAt) {
+            ready++;
+          }
+        }
+        return ready;
+      } catch (_) {
+        return null;
+      }
+    };
+    const syncReadyEggs = () => {
+      const count = countReadyEggs();
+      if (count === null || count === lastReportedReadyEggs) return;
+      lastReportedReadyEggs = count;
+      try { L.reportReadyEggs(count); } catch (_) {}
+    };
+    syncReadyEggs();
+    const eggBadgeTimer = setInterval(syncReadyEggs, 2000);
+    window.addEventListener('pagehide', () => clearInterval(eggBadgeTimer), { once: true });
   }
 })();
