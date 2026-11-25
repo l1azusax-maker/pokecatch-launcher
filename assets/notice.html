@@ -42,6 +42,28 @@
       --r-md: 14px;
       --ease: .15s ease;
     }
+    :root[data-theme="light"] {
+      --c: #1f7ae8;
+      --panel: #ffffff;
+      --panel-2: #f0f3f8;
+      --panel-3: #e4e9f2;
+      --line: #cfd6e3;
+      --sunken: #dde2ec;
+      --text: #1b2133;
+      --text-2: #3f4860;
+      --muted: #687189;
+      --red: #d8323a;
+      --yellow: #f5b800;
+      --blue-vivid: #1f7ae8;
+      --green: #167a37;
+    }
+    :root[data-theme="light"] .dc-x {
+      color: var(--red);
+    }
+    :root[data-theme="light"] .btn.primary {
+      background: linear-gradient(90deg, var(--c), color-mix(in srgb, var(--c) 82%, #14366b));
+      border-color: color-mix(in srgb, var(--c) 88%, #000);
+    }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { height: 100%; background: transparent; }
     /* 直角窗口：背景/边框画在 .card 上，不再做圆角（窗口本身也不透明，
@@ -266,6 +288,10 @@
         var raw = new URLSearchParams(location.search).get('d');
         if (raw) data = JSON.parse(raw);
       } catch (_) {}
+
+      if (data.theme === 'light') {
+        document.documentElement.setAttribute('data-theme', 'light');
+      }
 
       var isImport = data.kind === 'import';
 

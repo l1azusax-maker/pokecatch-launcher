@@ -16,12 +16,38 @@
       --panel-2: #252a3d;
       --panel-3: #2e3550;
       --line: #333a52;
+      --sw-track: #141826;
+      --sw-on-track: color-mix(in srgb, var(--c) 35%, #141826);
+      --sw-thumb: #9aa3bb;
+      --sw-on-thumb: #ffffff;
       --text: #eef1f8;
       --text-2: #c3c9d8;
       --muted: #9aa3bb;
       --red: #e3353b;
-      --green: #4cc96a;
+      --danger-text: #f3a6a9;
+      --danger-ic: #e66a6f;
+      --danger-hover-bg: color-mix(in srgb, var(--red) 24%, var(--panel-2));
+      --danger-hover-color: #ffffff;
       --font: "Jersey 10", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+    }
+    :root[data-theme="light"] {
+      --c: #1f7ae8;
+      --panel: #ffffff;
+      --panel-2: #f0f3f8;
+      --panel-3: #e4e9f2;
+      --line: #cfd6e3;
+      --sw-track: #dde2ec;
+      --sw-on-track: var(--c);
+      --sw-thumb: #ffffff;
+      --sw-on-thumb: #ffffff;
+      --text: #1b2133;
+      --text-2: #3f4860;
+      --muted: #687189;
+      --red: #d8323a;
+      --danger-text: #c62828;
+      --danger-ic: #d8323a;
+      --danger-hover-bg: #d8323a;
+      --danger-hover-color: #ffffff;
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body {
@@ -93,7 +119,7 @@
       height: 16px;
       flex: none;
       border-radius: 999px;
-      background: #141826;
+      background: var(--sw-track);
       border: 1px solid var(--line);
       transition: background-color .15s ease, border-color .15s ease;
     }
@@ -105,16 +131,16 @@
       width: 10px;
       height: 10px;
       border-radius: 50%;
-      background: var(--muted);
+      background: var(--sw-thumb);
       transition: transform .15s ease, background-color .15s ease;
     }
     .item.on .sw {
-      background: color-mix(in srgb, var(--c) 35%, #141826);
+      background: var(--sw-on-track);
       border-color: color-mix(in srgb, var(--c) 80%, var(--line));
     }
     .item.on .sw::after {
       transform: translateX(12px);
-      background: #fff;
+      background: var(--sw-on-thumb);
     }
     .sep {
       height: 1px;
@@ -123,18 +149,18 @@
       flex: none;
     }
     .item.danger {
-      color: #f3a6a9;
+      color: var(--danger-text);
     }
     .item.danger .ic {
-      color: #e66a6f;
+      color: var(--danger-ic);
     }
     .item.danger:hover {
-      background: color-mix(in srgb, var(--red) 24%, var(--panel-2));
+      background: var(--danger-hover-bg);
       border-color: color-mix(in srgb, var(--red) 68%, transparent);
-      color: #fff;
+      color: var(--danger-hover-color);
     }
     .item.danger:hover .ic {
-      color: #fff;
+      color: var(--danger-hover-color);
     }
   </style>
 </head>
@@ -178,6 +204,8 @@
 
       const applyState = (state) => {
         if (!state || typeof state !== 'object') return;
+        if (state.theme === 'light') document.documentElement.setAttribute('data-theme', 'light');
+        else if (state.theme === 'dark') document.documentElement.removeAttribute('data-theme');
         document.querySelectorAll('.item[data-key]').forEach((btn) => {
           const key = btn.getAttribute('data-key');
           const on = Boolean(state[key]);

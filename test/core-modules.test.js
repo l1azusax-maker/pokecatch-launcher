@@ -63,11 +63,14 @@ test('settings-store sanitizes legacy and removed keys', async (t) => {
     minimizeToTray: true,
     alwaysOnTop: true,
     muted: true,
+    theme: 'dark',
   });
 
-  const saved = saveSettings(file, { ...loaded, muted: false });
+  const saved = saveSettings(file, { ...loaded, muted: false, theme: 'light' });
   assert.equal(saved.ok, true);
   assert.equal(saved.settings.muted, false);
+  assert.equal(saved.settings.theme, 'light');
+  assert.equal(saveSettings(file, { theme: 'invalid' }).settings.theme, 'dark');
 });
 
 test('url-policy validates game URLs, OAuth endpoints and navigation policy', () => {

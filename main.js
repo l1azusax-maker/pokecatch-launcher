@@ -20,6 +20,7 @@ const {
 const {
   loadSettings: loadSettingsFromDisk,
   saveSettings: saveSettingsToDisk,
+  sanitizeTheme,
 } = require('./lib/settings-store');
 const { createAuthBridge } = require('./lib/auth-bridge');
 const { createScriptManager, MAX_SCRIPT_BYTES } = require('./lib/script-manager');
@@ -512,28 +513,69 @@ async function applyScrollbarSkin(wc) {
   }
 }
 
+function currentTheme() {
+  return sanitizeTheme(loadSettings().theme);
+}
+
+function themeColors(theme = currentTheme()) {
+  return theme === 'light'
+    ? { windowBg: '#e8ecf4', panelBg: '#ffffff' }
+    : { windowBg: '#141826', panelBg: '#1c2030' };
+}
+
+function applyLauncherTheme(theme) {
+  const next = sanitizeTheme(theme);
+  const { windowBg, panelBg } = themeColors(next);
+  try { nativeTheme.themeSource = next; } catch (_) {}
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try { mainWindow.setBackgroundColor(windowBg); } catch (_) {}
+    try { mainWindow.setAccentColor(windowBg); } catch (_) {}
+    try { mainWindow.contentView.setBackgroundColor(windowBg); } catch (_) {}
+  }
+  if (gameView) {
+    try { gameView.setBackgroundColor(windowBg); } catch (_) {}
+  }
+  if (trayMenuWindow && !trayMenuWindow.isDestroyed()) {
+    try { trayMenuWindow.setBackgroundColor(panelBg); } catch (_) {}
+  }
+  broadcastShellState();
+  syncTrayMenuState();
+}
+
+function setGameTheme(nextTheme) {
+  const normalized = sanitizeTheme(nextTheme);
+  if (currentTheme() === normalized) {
+    applyLauncherTheme(normalized);
+    return;
+  }
+  persistSettings({ theme: normalized });
+  applyLauncherTheme(normalized);
+  dbg('[theme] synced launcher theme =', normalized);
+}
+
+// 尊重游戏自身设置的深色 / 浅色主题，仅补充深色模式下的原生控件 color-scheme，
+// 并把当前解析的主题回报给主进程，让标题栏、托盘菜单与弹窗实时跟随切换。
 function applyThemeToGame(wc) {
   if (!wc) return;
   const code = `
     (function () {
       try {
         var h = document.documentElement;
-        if (h) h.removeAttribute('data-theme');
-        if (window.Theme && typeof window.Theme.set === 'function') {
-          window.Theme.set('dark');
-        }
+        var resolved = (window.Theme && typeof window.Theme.resolved === 'function')
+          ? window.Theme.resolved()
+          : (h && h.getAttribute('data-theme') === 'light' ? 'light' : 'dark');
+        var isLight = resolved === 'light' || (h && h.getAttribute('data-theme') === 'light');
         if (h) {
-          h.style.setProperty('color-scheme', 'dark');
-          if (!h.style.backgroundColor) h.style.backgroundColor = '#141826';
+          if (isLight) h.style.removeProperty('color-scheme');
+          else h.style.setProperty('color-scheme', 'dark');
         }
-        if (document.body && !document.body.style.backgroundColor) {
-          document.body.style.backgroundColor = '#141826';
-        }
-        return h ? getComputedStyle(h).colorScheme : null;
-      } catch (e) { return 'err:' + e; }
+        return isLight ? 'light' : 'dark';
+      } catch (e) { return 'dark'; }
     })();
   `;
-  wc.executeJavaScript(code).then((scheme) => dbg('[theme] color-scheme =', scheme)).catch(() => {});
+  wc.executeJavaScript(code)
+    .then((theme) => setGameTheme(theme))
+    .catch(() => {});
   applyScrollbarSkin(wc);
 }
 
@@ -647,6 +689,7 @@ function getShellStateSnapshot() {
   return {
     alwaysOnTop: !!s.alwaysOnTop,
     muted: !!s.muted,
+    theme: sanitizeTheme(s.theme),
   };
 }
 
@@ -710,6 +753,7 @@ function getTrayMenuState() {
     minimizeToTray: !!s.minimizeToTray,
     muted: !!s.muted,
     alwaysOnTop: !!s.alwaysOnTop,
+    theme: sanitizeTheme(s.theme),
   };
 }
 
@@ -753,7 +797,7 @@ function ensureTrayMenuWindow() {
     skipTaskbar: true,
     alwaysOnTop: true,
     transparent: false,
-    backgroundColor: '#1c2030',
+    backgroundColor: themeColors().panelBg,
     hasShadow: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload-tray-menu.js'),
@@ -1128,6 +1172,7 @@ function showOfflineFallback({ code, desc, url }) {
     code: code || '',
     desc: desc || '',
     url: url || CONFIG.gameUrl,
+    theme: currentTheme(),
   };
   try {
     wc.loadFile(path.join(__dirname, 'assets', 'offline.html'), {
@@ -1417,6 +1462,8 @@ function createWindow() {
 
   gameReady = false;
   const initialSettings = loadSettings();
+  const initialTheme = sanitizeTheme(initialSettings.theme);
+  const { windowBg: initialWindowBg } = themeColors(initialTheme);
 
   mainWindow = new BrowserWindow({
     x: X,
@@ -1425,8 +1472,8 @@ function createWindow() {
     height: H,
     minWidth: Math.min(MIN_W, W),
     minHeight: Math.min(MIN_H + PC_TB, H),
-    backgroundColor: '#141826',
-    accentColor: '#141826',
+    backgroundColor: initialWindowBg,
+    accentColor: initialWindowBg,
     roundedCorners: false,
     hasShadow: false,
     frame: false,
@@ -1439,21 +1486,21 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
-      // 标题栏宿主层仅负责 36px 静态顶栏与窗口深色背板，关闭后台节流防止拉伸时重绘慢一拍露白。
+      // 标题栏宿主层仅负责 36px 静态顶栏与窗口背板，关闭后台节流防止拉伸时重绘慢一拍露白。
       backgroundThrottling: false,
       spellcheck: false,
     },
   });
 
   Menu.setApplicationMenu(null);
-  try { mainWindow.setBackgroundColor('#141826'); } catch (_) {}
-  try { mainWindow.setAccentColor('#141826'); } catch (_) {}
-  try { mainWindow.contentView.setBackgroundColor('#141826'); } catch (_) {}
+  try { mainWindow.setBackgroundColor(initialWindowBg); } catch (_) {}
+  try { mainWindow.setAccentColor(initialWindowBg); } catch (_) {}
+  try { mainWindow.contentView.setBackgroundColor(initialWindowBg); } catch (_) {}
   lastShapeSig = '';
   applyMaximizedClip();
   applyAlwaysOnTop(mainWindow, initialSettings);
 
-  mainWindow.loadFile(path.join(__dirname, 'assets', 'shell.html'));
+  mainWindow.loadFile(path.join(__dirname, 'assets', 'shell.html'), { query: { theme: initialTheme } });
 
   gameView = new WebContentsView({
     webPreferences: {
@@ -1466,7 +1513,7 @@ function createWindow() {
     },
   });
   try { mainWindow.contentView.addChildView(gameView); } catch (_) {}
-  try { gameView.setBackgroundColor('#141826'); } catch (_) {}
+  try { gameView.setBackgroundColor(initialWindowBg); } catch (_) {}
   flushGameViewLayout();
 
   const gwc = gameWC();
@@ -1847,7 +1894,7 @@ function openScriptUpdateNotice({ kind, items, reopenSettings }) {
     show: false,
     skipTaskbar: true,
     transparent: false,
-    backgroundColor: '#1c2030',
+    backgroundColor: themeColors().panelBg,
     hasShadow: false,
     parent: mainWindow,
     webPreferences: {
@@ -1862,6 +1909,7 @@ function openScriptUpdateNotice({ kind, items, reopenSettings }) {
   const payload = {
     kind: kind || 'update',
     count: list.length,
+    theme: currentTheme(),
     items: list.map((u) => ({ name: u.name, from: u.from, to: u.to })),
   };
   noticeWindow.loadFile(path.join(__dirname, 'assets', 'notice.html'), { query: { d: JSON.stringify(payload) } });
@@ -2085,6 +2133,11 @@ function setupIpc() {
     updateReadyEggsBadge(count);
   });
 
+  ipcMain.on('game-theme-changed', (e, theme) => {
+    if (!isGameIpcSender(e)) return;
+    setGameTheme(theme);
+  });
+
   ipcMain.on('tray-menu-action', (e, action) => {
     if (!isLocalIpcSender(e, 'tray-menu.html')) return;
     if (action === 'refresh-clean') {
@@ -2153,8 +2206,8 @@ function setupIpc() {
 
 // ============ 应用生命周期 ============
 app.whenReady().then(() => {
-  // 强制 Electron 原生窗口使用暗色主题（开启 Windows DWM 暗色模式），避免浅色系统下缩放过渡帧露白。
-  try { nativeTheme.themeSource = 'dark'; } catch (_) {}
+  // 按上次记忆的游戏主题同步 Electron 原生窗口主题，避免深色模式下缩放过渡帧露白。
+  try { nativeTheme.themeSource = currentTheme(); } catch (_) {}
   session.defaultSession.setPermissionCheckHandler(() => false);
   session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
   try { session.defaultSession.setUserAgent(CLEAN_UA); } catch (_) {}

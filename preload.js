@@ -46,8 +46,9 @@ contextBridge.exposeInMainWorld('launcher', {
     return () => ipcRenderer.removeListener('scripts-updated', listener);
   },
 
-  // ============ 托盘角标上报 ============
+  // ============ 托盘角标与主题上报 ============
   reportReadyEggs: (count) => ipcRenderer.send('ready-eggs-count', Number(count) || 0),
+  reportTheme: (theme) => ipcRenderer.send('game-theme-changed', theme === 'light' ? 'light' : 'dark'),
 
   // ============ 离线兜底页专用（主进程仅对 offline.html 放行） ============
   offlineRetry: () => ipcRenderer.send('offline-retry'),

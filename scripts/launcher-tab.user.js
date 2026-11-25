@@ -52,11 +52,11 @@
       color: var(--muted);
     }
     .pc-lx-badge.err {
-      background: color-mix(in srgb, var(--red, #e3353b) 20%, var(--panel));
+      background: color-mix(in srgb, var(--red, #e3353b) 16%, var(--panel));
       border-color: color-mix(in srgb, var(--red, #e3353b) 55%, transparent);
-      color: #ff9c9f;
+      color: var(--danger-text, #ff9c9f);
     }
-    .pc-lx-err { color: #ff8e92; }
+    .pc-lx-err { color: var(--danger-text, #ff8e92); }
     .pc-lx-row-acts {
       display: flex;
       align-items: center;
@@ -758,5 +758,32 @@
     syncReadyEggs();
     const eggBadgeTimer = setInterval(syncReadyEggs, 2000);
     window.addEventListener('pagehide', () => clearInterval(eggBadgeTimer), { once: true });
+  }
+
+  // ---------- 游戏深色 / 浅色主题实时同步到启动器外壳与弹窗 ----------
+  if (typeof L.reportTheme === 'function') {
+    let lastTheme = '';
+    const syncGameTheme = () => {
+      try {
+        const h = document.documentElement;
+        const resolved = (window.Theme && typeof window.Theme.resolved === 'function')
+          ? window.Theme.resolved()
+          : (h && h.getAttribute('data-theme') === 'light' ? 'light' : 'dark');
+        const next = (resolved === 'light' || (h && h.getAttribute('data-theme') === 'light')) ? 'light' : 'dark';
+        if (h) {
+          if (next === 'light') h.style.removeProperty('color-scheme');
+          else h.style.setProperty('color-scheme', 'dark');
+        }
+        if (next === lastTheme) return;
+        lastTheme = next;
+        L.reportTheme(next);
+      } catch (_) {}
+    };
+    syncGameTheme();
+    const themeObserver = new MutationObserver(syncGameTheme);
+    if (document.documentElement) {
+      themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    }
+    window.addEventListener('pagehide', () => themeObserver.disconnect(), { once: true });
   }
 })();
