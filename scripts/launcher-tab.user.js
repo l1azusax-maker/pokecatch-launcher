@@ -725,39 +725,233 @@
     window.addEventListener('pagehide', unsubscribe, { once: true });
   }
 
-  // ---------- 培育屋「快要孵化了」蛋数量监听（直接读取游戏源码只读接口） ----------
-  if (typeof L.reportReadyEggs === 'function') {
-    let lastReportedReadyEggs = -1;
-    const countReadyEggs = () => {
-      try {
-        const G = window.Game;
-        if (!G || typeof G.pension !== 'function') return null;
-        const pen = G.pension();
-        const eggs = Array.isArray(pen && pen.eggs) ? pen.eggs : [];
-        const now = typeof G.time === 'function' ? G.time() : Date.now();
-        let ready = 0;
-        for (const egg of eggs) {
-          if (!egg) continue;
-          if (typeof G.eggReady === 'function') {
-            if (G.eggReady(egg, now)) ready++;
-          } else if (Number.isFinite(egg.hatchAt) && now >= egg.hatchAt) {
-            ready++;
+  // ---------- 培育屋快要孵化 / 地下通道探索已完成 / 金钱总数：极低功耗托盘同步 ----------
+  if (typeof L.reportTrayAlert === 'function') {
+    const SAVE_KEY = 'gachamon-save-v1';
+    const CLOCK_KEY = 'pokecatch.clock';
+    let schedules = { eggItems: [], underItems: [], moneyNum: null };
+    let lastReportedSig = '';
+    let parseTimer = 0;
+    let checkTimer = 0;
+    let lastStorageSyncAt = 0;
+
+    // 只从顶层大 JSON 字符串中切出 pension.eggs / under.slots 极小数组，跳过占 95%+ 体积的 mons 等字段。
+    function findMatchingBracket(text, startIdx, openCh, closeCh) {
+      let depth = 0;
+      let inStr = false;
+      let esc = false;
+      for (let i = startIdx; i < text.length; i++) {
+        const ch = text[i];
+        if (inStr) {
+          if (esc) { esc = false; continue; }
+          if (ch === '\\') { esc = true; continue; }
+          if (ch === '"') inStr = false;
+          continue;
+        }
+        if (ch === '"') { inStr = true; continue; }
+        if (ch === openCh) depth++;
+        else if (ch === closeCh) {
+          depth--;
+          if (depth === 0) return i;
+        }
+      }
+      return -1;
+    }
+
+    function extractChildArray(raw, parentKey, childKey) {
+      const pNeedle = `"${parentKey}":`;
+      let pIdx = raw.indexOf(pNeedle);
+      while (pIdx !== -1) {
+        let braceStart = pIdx + pNeedle.length;
+        while (braceStart < raw.length && raw[braceStart] <= ' ') braceStart++;
+        if (raw[braceStart] === '{') {
+          const braceEnd = findMatchingBracket(raw, braceStart, '{', '}');
+          if (braceEnd === -1) return null;
+          const sub = raw.slice(braceStart, braceEnd + 1);
+          const cNeedle = `"${childKey}":`;
+          let cIdx = sub.indexOf(cNeedle);
+          while (cIdx !== -1) {
+            let arrStart = cIdx + cNeedle.length;
+            while (arrStart < sub.length && sub[arrStart] <= ' ') arrStart++;
+            if (sub[arrStart] === '[') {
+              const arrEnd = findMatchingBracket(sub, arrStart, '[', ']');
+              if (arrEnd !== -1) {
+                return JSON.parse(sub.slice(arrStart, arrEnd + 1));
+              }
+            }
+            cIdx = sub.indexOf(cNeedle, cIdx + cNeedle.length);
+          }
+          return [];
+        }
+        pIdx = raw.indexOf(pNeedle, pIdx + pNeedle.length);
+      }
+      return [];
+    }
+
+    function collectItems(eggs, slots, eggItems, underItems) {
+      if (Array.isArray(eggs)) {
+        for (let i = 0; i < eggs.length; i++) {
+          const egg = eggs[i];
+          const hatchAt = Number(egg && egg.hatchAt);
+          if (Number.isFinite(hatchAt) && hatchAt > 0) {
+            const id = String(egg.uid != null ? egg.uid : (egg.k != null ? egg.k : `${hatchAt}:${i}`));
+            eggItems.push({ id: 'egg:' + id, at: hatchAt });
           }
         }
-        return ready;
-      } catch (_) {
-        return null;
       }
+      if (Array.isArray(slots)) {
+        for (let i = 0; i < slots.length; i++) {
+          const slot = slots[i];
+          if (!slot || typeof slot !== 'object') continue;
+          const rawId = slot.id != null ? slot.id : (slot.bay != null ? `${slot.bay}:${slot.start || 0}` : `${slot.start || 0}:${i}`);
+          if (slot.recalled != null) {
+            underItems.push({ id: 'ug:' + String(rawId), at: 0 });
+          } else {
+            const end = Number(slot.end);
+            if (Number.isFinite(end) && end > 0) {
+              underItems.push({ id: 'ug:' + String(rawId), at: end });
+            }
+          }
+        }
+      }
+    }
+
+    function readSchedulesFromRaw(raw) {
+      const eggItems = [];
+      const underItems = [];
+      let moneyNum = null;
+      const moneyMatch = raw.slice(0, 400).match(/"money"\s*:\s*(\d+)/) || raw.match(/"money"\s*:\s*(\d+)/);
+      if (moneyMatch) moneyNum = Number(moneyMatch[1]);
+      try {
+        const eggs = extractChildArray(raw, 'pension', 'eggs');
+        const slots = extractChildArray(raw, 'under', 'slots');
+        collectItems(eggs, slots, eggItems, underItems);
+      } catch (_) {
+        try {
+          const save = JSON.parse(raw);
+          if (Number.isFinite(Number(save && save.money))) moneyNum = Number(save.money);
+          collectItems(save && save.pension && save.pension.eggs, save && save.under && save.under.slots, eggItems, underItems);
+        } catch (_) {}
+      }
+      return { eggItems, underItems, moneyNum };
+    }
+
+    function readLiveMoneyText() {
+      try {
+        const el = document.getElementById('money');
+        const txt = el && el.textContent ? el.textContent.trim() : '';
+        if (txt) return txt;
+      } catch (_) {}
+      if (Number.isFinite(schedules.moneyNum)) {
+        return Math.max(0, Math.floor(schedules.moneyNum)).toLocaleString('en-US');
+      }
+      return '';
+    }
+
+    function getGameNow() {
+      const localNow = Date.now();
+      try {
+        const clockFloor = Number(localStorage.getItem(CLOCK_KEY) || 0);
+        if (Number.isFinite(clockFloor) && clockFloor > localNow && clockFloor - localNow < 120000) {
+          return clockFloor;
+        }
+      } catch (_) {}
+      return localNow;
+    }
+
+    function evaluateAndSchedule() {
+      if (checkTimer) { clearTimeout(checkTimer); checkTimer = 0; }
+      const now = getGameNow();
+      let readyEggs = 0;
+      let readyUnderground = 0;
+      const readyIds = [];
+      let nextAt = Infinity;
+
+      const eggs = schedules.eggItems;
+      for (let i = 0; i < eggs.length; i++) {
+        if (now >= eggs[i].at) {
+          readyEggs++;
+          readyIds.push(eggs[i].id);
+        } else if (eggs[i].at < nextAt) {
+          nextAt = eggs[i].at;
+        }
+      }
+      const under = schedules.underItems;
+      for (let i = 0; i < under.length; i++) {
+        if (now >= under[i].at) {
+          readyUnderground++;
+          readyIds.push(under[i].id);
+        } else if (under[i].at < nextAt) {
+          nextAt = under[i].at;
+        }
+      }
+
+      const money = readLiveMoneyText();
+      const sig = `${money}|${readyIds.join(',')}`;
+      if (sig !== lastReportedSig) {
+        lastReportedSig = sig;
+        try { L.reportTrayAlert({ money, readyEggs, readyUnderground, readyIds }); } catch (_) {}
+      }
+
+      // 每 3 秒轻量检查一次 #money 文本和内存时间戳（零 localStorage 读取、零 JSON.parse）；
+      // 超过 15 秒再做一次局部切片兜底复核。
+      const delay = Number.isFinite(nextAt)
+        ? Math.max(300, Math.min(3000, nextAt - now + 300))
+        : 3000;
+      checkTimer = setTimeout(() => {
+        if (Date.now() - lastStorageSyncAt >= 15000) refreshFromStorage();
+        else evaluateAndSchedule();
+      }, delay);
+    }
+
+    function refreshFromStorage() {
+      lastStorageSyncAt = Date.now();
+      try {
+        const raw = localStorage.getItem(SAVE_KEY);
+        schedules = raw ? readSchedulesFromRaw(raw) : { eggItems: [], underItems: [], moneyNum: null };
+      } catch (_) {}
+      evaluateAndSchedule();
+    }
+
+    function scheduleParse() {
+      if (parseTimer) clearTimeout(parseTimer);
+      parseTimer = setTimeout(() => {
+        parseTimer = 0;
+        refreshFromStorage();
+      }, 350);
+    }
+
+    // 被动监听游戏写存档（产蛋/收蛋/派出地下探索/领奖都会写入），零轮询读盘开销。
+    try {
+      const proto = Storage.prototype;
+      if (!proto.__pcSaveHooked) {
+        const origSetItem = proto.setItem;
+        proto.setItem = function (key, value) {
+          const res = origSetItem.apply(this, arguments);
+          if (this === window.localStorage && key === SAVE_KEY) {
+            try {
+              if (typeof window.__pcOnSaveWritten === 'function') window.__pcOnSaveWritten();
+            } catch (_) {}
+          }
+          return res;
+        };
+        proto.__pcSaveHooked = true;
+      }
+      window.__pcOnSaveWritten = () => scheduleParse();
+    } catch (_) {}
+
+    const onStorageEvent = (e) => {
+      if (e.key === SAVE_KEY || e.key === null) scheduleParse();
     };
-    const syncReadyEggs = () => {
-      const count = countReadyEggs();
-      if (count === null || count === lastReportedReadyEggs) return;
-      lastReportedReadyEggs = count;
-      try { L.reportReadyEggs(count); } catch (_) {}
-    };
-    syncReadyEggs();
-    const eggBadgeTimer = setInterval(syncReadyEggs, 2000);
-    window.addEventListener('pagehide', () => clearInterval(eggBadgeTimer), { once: true });
+    window.addEventListener('storage', onStorageEvent);
+    refreshFromStorage();
+
+    window.addEventListener('pagehide', () => {
+      if (parseTimer) clearTimeout(parseTimer);
+      if (checkTimer) clearTimeout(checkTimer);
+      window.removeEventListener('storage', onStorageEvent);
+      window.__pcOnSaveWritten = null;
+    }, { once: true });
   }
 
   // ---------- 游戏深色 / 浅色主题实时同步到启动器外壳与弹窗 ----------

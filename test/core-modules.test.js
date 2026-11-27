@@ -20,7 +20,7 @@ const { createScriptManager } = require('../lib/script-manager');
 const { createAuthBridge } = require('../lib/auth-bridge');
 const { setupAppUpdater } = require('../lib/app-updater');
 const { createMemoryManager, sumProcessMemoryKB } = require('../lib/memory-manager');
-const { drawBadgeOnBgraBitmap, countReadyEggsFromSave } = require('../lib/tray-badge');
+const { extractAlertSchedules, evaluateAlertState, buildTooltip, createTrayFlasher, TRANSPARENT_PNG_16 } = require('../lib/tray-alert');
 
 test('fs-atomic writes and reads JSON safely with fallback on corruption', async (t) => {
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pcl-atomic-'));
@@ -437,45 +437,126 @@ test('memory-manager runs timeout-guarded safe GC, skips when hidden, and never 
   assert.equal(attached, false);
 });
 
-test('tray-badge draws bottom-right red/white badge pixels and counts ready eggs accurately', () => {
-  const w = 32;
-  const h = 32;
-  const blank = Buffer.alloc(w * h * 4, 0);
-
-  const zero = drawBadgeOnBgraBitmap(blank, w, h, 0);
-  assert.equal(zero.equals(blank), true);
-
-  const one = drawBadgeOnBgraBitmap(blank, w, h, 3);
-  assert.equal(one.equals(blank), false);
-  // 左上角区域未被角标遮挡，右下角区域有不透明红/白像素
-  assert.equal(one[3], 0);
-  let whitePixels = 0;
-  let redPixels = 0;
-  for (let y = 14; y < h; y++) {
-    for (let x = 14; x < w; x++) {
-      const i = (y * w + x) * 4;
-      const b = one[i], g = one[i + 1], r = one[i + 2], a = one[i + 3];
-      if (a === 255 && r === 255 && g === 255 && b === 255) whitePixels++;
-      if (a === 255 && r > 200 && g < 80 && b < 80) redPixels++;
-    }
-  }
-  assert.ok(whitePixels > 10);
-  assert.ok(redPixels > 50);
-
-  const twoDigits = drawBadgeOnBgraBitmap(blank, w, h, 12);
-  assert.equal(twoDigits.equals(one), false);
+test('tray-alert generates valid PNG, extracts schedules, formats 4-line tooltip, and mutes acknowledged alerts', async () => {
+  const zlib = require('node:zlib');
+  // 校验生成的空白闪烁 PNG 具备合法签名、16x16 IHDR 和可解压的 1040 字节 RGBA IDAT
+  assert.equal(TRANSPARENT_PNG_16.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])), true);
+  assert.equal(TRANSPARENT_PNG_16.readUInt32BE(16), 16);
+  assert.equal(TRANSPARENT_PNG_16.readUInt32BE(20), 16);
+  const idatOff = 8 + 12 + 13;
+  assert.equal(TRANSPARENT_PNG_16.subarray(idatOff + 4, idatOff + 8).toString('ascii'), 'IDAT');
+  const idatLen = TRANSPARENT_PNG_16.readUInt32BE(idatOff);
+  const inflated = zlib.inflateSync(TRANSPARENT_PNG_16.subarray(idatOff + 8, idatOff + 8 + idatLen));
+  assert.equal(inflated.length, 16 * (1 + 16 * 4));
 
   const save = {
     pension: {
       eggs: [
-        { uid: 'a', hatchAt: 1000 },
-        { uid: 'b', hatchAt: 2000 },
-        { uid: 'c', hatchAt: 3000 },
+        { uid: 'e1', hatchAt: 1000 },
+        { uid: 'e2', hatchAt: 5000 },
+      ],
+    },
+    under: {
+      slots: [
+        { id: 'u1', start: 500, end: 2000 },
+        { id: 'u2', start: 500, end: 9000, recalled: 800 },
       ],
     },
   };
-  assert.equal(countReadyEggsFromSave(save, 999), 0);
-  assert.equal(countReadyEggsFromSave(save, 1000), 1);
-  assert.equal(countReadyEggsFromSave(save, 2500), 2);
-  assert.equal(countReadyEggsFromSave(save, 5000), 3);
+  const schedules = extractAlertSchedules(save);
+  assert.deepEqual(schedules.eggItems, [
+    { id: 'egg:e1', at: 1000 },
+    { id: 'egg:e2', at: 5000 },
+  ]);
+  assert.deepEqual(schedules.underItems, [
+    { id: 'ug:u1', at: 2000 },
+    { id: 'ug:u2', at: 0 },
+  ]);
+
+  const at900 = evaluateAlertState(schedules, 900);
+  assert.equal(at900.readyEggs, 0);
+  assert.equal(at900.readyUnderground, 1); // recalled slot is immediately done
+  assert.deepEqual(at900.readyIds, ['ug:u2']);
+  assert.equal(at900.shouldFlash, true);
+
+  const at2500 = evaluateAlertState(schedules, 2500);
+  assert.equal(at2500.readyEggs, 1);
+  assert.equal(at2500.readyUnderground, 2);
+  assert.deepEqual(at2500.readyIds, ['egg:e1', 'ug:u1', 'ug:u2']);
+  assert.equal(at2500.shouldFlash, true);
+
+  assert.equal(
+    buildTooltip(),
+    "Poke'Catch 启动器\n金钱总数：--\n孵化完成：0颗蛋\n挖矿完成：0个队伍"
+  );
+  assert.equal(
+    buildTooltip({ money: 91720, readyEggs: 1, readyUnderground: 2 }),
+    "Poke'Catch 启动器\n金钱总数：91,720\n孵化完成：1颗蛋\n挖矿完成：2个队伍"
+  );
+  assert.equal(
+    buildTooltip({ money: '123,456', readyEggs: 3, readyUnderground: 0 }),
+    "Poke'Catch 启动器\n金钱总数：123,456\n孵化完成：3颗蛋\n挖矿完成：0个队伍"
+  );
+
+  const images = [];
+  const tooltips = [];
+  const normalIcon = { id: 'normal', isEmpty: () => false };
+  const blankIcon = { id: 'blank', isEmpty: () => false };
+  const fakeTray = {
+    isDestroyed: () => false,
+    setImage: (img) => images.push(img.id),
+    setToolTip: (tip) => tooltips.push(tip),
+  };
+  let foreground = false;
+  const flasher = createTrayFlasher({
+    tray: fakeTray,
+    normalIcon,
+    nativeImage: { createFromBuffer: () => blankIcon },
+    isWindowForeground: () => foreground,
+    intervalMs: 25,
+  });
+
+  // 1. 后台出现新的可孵化蛋 → 开始闪烁并更新四行提示框
+  flasher.update({ money: '91,720', readyEggs: 1, readyUnderground: 0, readyIds: ['egg:e1'] });
+  assert.equal(flasher.isFlashing(), true);
+  assert.equal(
+    tooltips[tooltips.length - 1],
+    "Poke'Catch 启动器\n金钱总数：91,720\n孵化完成：1颗蛋\n挖矿完成：0个队伍"
+  );
+  await new Promise((r) => setTimeout(r, 70));
+  assert.ok(images.includes('blank'));
+
+  // 2. 玩家点击托盘/切回窗口标为已读 → 立刻停闪；之后金钱变化但仍是同一颗蛋 → 更新提示框但不重闪
+  flasher.acknowledgeCurrent();
+  assert.equal(flasher.isFlashing(), false);
+  assert.equal(images[images.length - 1], 'normal');
+
+  flasher.update({ money: '92,300', readyEggs: 1, readyUnderground: 0, readyIds: ['egg:e1'] });
+  assert.equal(flasher.isFlashing(), false);
+  assert.equal(
+    tooltips[tooltips.length - 1],
+    "Poke'Catch 启动器\n金钱总数：92,300\n孵化完成：1颗蛋\n挖矿完成：0个队伍"
+  );
+
+  // 3. 后台新增地下通道挖矿完成 → 有未读 ID，重新闪烁
+  flasher.update({ money: '92,300', readyEggs: 1, readyUnderground: 1, readyIds: ['egg:e1', 'ug:u1'] });
+  assert.equal(flasher.isFlashing(), true);
+
+  // 4. 窗口处于前台时新增另一颗蛋 → 自动标为已读不闪烁，切回后台后也保持静默
+  foreground = true;
+  flasher.update({ money: '92,500', readyEggs: 2, readyUnderground: 1, readyIds: ['egg:e1', 'ug:u1', 'egg:e2'] });
+  assert.equal(flasher.isFlashing(), false);
+  foreground = false;
+  flasher.update({ money: '92,600', readyEggs: 2, readyUnderground: 1, readyIds: ['egg:e1', 'ug:u1', 'egg:e2'] });
+  assert.equal(flasher.isFlashing(), false);
+
+  // 5. 全部领取完毕 → 停止闪烁并清理旧已读 ID
+  flasher.update({ money: '95,000', readyEggs: 0, readyUnderground: 0, readyIds: [] });
+  assert.equal(flasher.isFlashing(), false);
+  assert.equal(images[images.length - 1], 'normal');
+  assert.equal(
+    tooltips[tooltips.length - 1],
+    "Poke'Catch 启动器\n金钱总数：95,000\n孵化完成：0颗蛋\n挖矿完成：0个队伍"
+  );
+  flasher.dispose();
 });

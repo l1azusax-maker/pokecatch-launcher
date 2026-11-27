@@ -25,7 +25,7 @@ const {
 const { createAuthBridge } = require('./lib/auth-bridge');
 const { createScriptManager, MAX_SCRIPT_BYTES } = require('./lib/script-manager');
 const { createMemoryManager, sumProcessMemoryKB } = require('./lib/memory-manager');
-const { createTrayBadgeRenderer } = require('./lib/tray-badge');
+const { createTrayFlasher, buildTooltip } = require('./lib/tray-alert');
 
 // ============ 调试日志（置于顶部，避免启动阶段调用触发 TDZ） ============
 let debugLogBuffer = [];
@@ -240,6 +240,11 @@ let pendingCleanNotice = false;
 function isMainWindowBackgrounded() {
   if (!mainWindow || mainWindow.isDestroyed()) return false;
   return mainWindow.isMinimized() || !mainWindow.isVisible();
+}
+
+function isMainWindowForeground() {
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
+  return mainWindow.isVisible() && !mainWindow.isMinimized() && mainWindow.isFocused();
 }
 
 function showGameToast(msg) {
@@ -677,11 +682,74 @@ function applyAudioMute(wc, settings) {
   try { wc.setAudioMuted(muted); } catch (_) {}
 }
 
+let pinWatchTimer = null;
+let pinBlurTimer = null;
+let pinLevelFlip = false;
+
+function stopPinWatch() {
+  if (pinWatchTimer) { clearInterval(pinWatchTimer); pinWatchTimer = null; }
+  if (pinBlurTimer) { clearTimeout(pinBlurTimer); pinBlurTimer = null; }
+}
+
+function shouldGuardUserPin(win) {
+  if (!win || win.isDestroyed() || fsState) return false;
+  if (!loadSettings().alwaysOnTop) return false;
+  if (!win.isVisible() || win.isMinimized()) return false;
+  if (trayMenuWindow && !trayMenuWindow.isDestroyed() && trayMenuWindow.isVisible()) return false;
+  if (noticeWindow && !noticeWindow.isDestroyed() && noticeWindow.isVisible()) return false;
+  if (authBridge.isActive()) return false;
+  return true;
+}
+
+// 微信/QQ 等全屏截图覆盖工具退出后，Windows 可能剥离窗口的 WS_EX_TOPMOST 或刷新 Z-order，
+// 而 Electron 内部缓存同一 level 时会跳过 SetWindowPos。
+// 在同属 TOPMOST 的 floating / torn-off-menu 之间交替，可零闪烁、不抢焦点地强制刷新置顶层级。
+function reassertUserAlwaysOnTop(win) {
+  if (!shouldGuardUserPin(win)) return;
+  try {
+    pinLevelFlip = !pinLevelFlip;
+    win.setAlwaysOnTop(true, pinLevelFlip ? 'torn-off-menu' : 'floating');
+  } catch (_) {}
+}
+
+function startPinWatch(win) {
+  stopPinWatch();
+  if (!win || win.isDestroyed()) return;
+  pinWatchTimer = setInterval(() => {
+    if (!mainWindow || mainWindow.isDestroyed() || !loadSettings().alwaysOnTop) {
+      stopPinWatch();
+      return;
+    }
+    if (!shouldGuardUserPin(mainWindow)) return;
+    try {
+      if (!mainWindow.isAlwaysOnTop() || !mainWindow.isFocused()) {
+        reassertUserAlwaysOnTop(mainWindow);
+      }
+    } catch (_) {}
+  }, 2000);
+  if (typeof pinWatchTimer.unref === 'function') pinWatchTimer.unref();
+}
+
+function schedulePinReassertOnBlur(win) {
+  if (pinBlurTimer) { clearTimeout(pinBlurTimer); pinBlurTimer = null; }
+  if (!shouldGuardUserPin(win)) return;
+  pinBlurTimer = setTimeout(() => {
+    pinBlurTimer = null;
+    reassertUserAlwaysOnTop(win);
+  }, 250);
+  if (typeof pinBlurTimer.unref === 'function') pinBlurTimer.unref();
+}
+
 function applyAlwaysOnTop(win, settings) {
   if (!win || win.isDestroyed()) return;
   if (fsState) return;
   const on = !!(settings || loadSettings()).alwaysOnTop;
   try { win.setAlwaysOnTop(on, 'floating'); } catch (_) {}
+  if (on) {
+    startPinWatch(win);
+  } else {
+    stopPinWatch();
+  }
 }
 
 function getShellStateSnapshot() {
@@ -743,8 +811,7 @@ const TRAY_MENU_H = 246;
 let trayMenuWindow = null;
 let trayMenuReady = false;
 let trayMenuSuppressBlurUntil = 0;
-let getTrayIconForCount = null;
-let lastReadyEggsCount = -1;
+let trayFlasher = null;
 
 function getTrayMenuState() {
   const s = loadSettings();
@@ -869,19 +936,8 @@ function createTrayIcon() {
   return img.isEmpty() ? nativeImage.createFromPath(pngPath) : img;
 }
 
-function updateReadyEggsBadge(count) {
-  const n = Math.max(0, Math.min(999, Math.floor(Number(count) || 0)));
-  if (n === lastReadyEggsCount) return;
-  lastReadyEggsCount = n;
-  if (!tray || tray.isDestroyed()) return;
-  try {
-    if (getTrayIconForCount) {
-      tray.setImage(getTrayIconForCount(n));
-    }
-    tray.setToolTip(n > 0 ? `Poke'Catch 启动器 · ${n} 个蛋快要孵化了` : "Poke'Catch 启动器");
-  } catch (err) {
-    dbg('[tray] update badge failed', err && err.message ? err.message : String(err));
-  }
+function updateTrayAlertState(payload) {
+  if (trayFlasher) trayFlasher.update(payload);
 }
 
 function restoreMainWindowFromTray({ keepMenuOpen = false } = {}) {
@@ -921,16 +977,18 @@ function ensureTray() {
   if (tray && !tray.isDestroyed()) return tray;
   try {
     const baseIcon = createTrayIcon();
-    getTrayIconForCount = createTrayBadgeRenderer({
-      nativeImage,
-      baseIcon,
-      basePngPath: path.join(__dirname, 'assets', 'icon.png'),
-    });
     tray = new Tray(baseIcon);
-    tray.setToolTip("Poke'Catch 启动器");
-    lastReadyEggsCount = 0;
+    tray.setToolTip(buildTooltip());
+    trayFlasher = createTrayFlasher({
+      tray,
+      normalIcon: baseIcon,
+      nativeImage,
+      isWindowForeground: () => isMainWindowForeground(),
+      dbg,
+    });
     ensureTrayMenuWindow();
     tray.on('click', () => {
+      if (trayFlasher) trayFlasher.acknowledgeCurrent();
       closeTrayMenu();
       if (!mainWindow || mainWindow.isDestroyed()) { createWindow(); return; }
       if (mainWindow.isVisible() && !mainWindow.isMinimized()) {
@@ -940,8 +998,14 @@ function ensureTray() {
         showMainWindowFromTray();
       }
     });
-    tray.on('double-click', () => showMainWindowFromTray());
-    tray.on('right-click', () => openTrayMenuAtCursor());
+    tray.on('double-click', () => {
+      if (trayFlasher) trayFlasher.acknowledgeCurrent();
+      showMainWindowFromTray();
+    });
+    tray.on('right-click', () => {
+      if (trayFlasher) trayFlasher.acknowledgeCurrent();
+      openTrayMenuAtCursor();
+    });
   } catch (err) {
     dbg('[tray] init failed', err && err.message ? err.message : String(err));
   }
@@ -1616,9 +1680,12 @@ function createWindow() {
   });
   mainWindow.on('blur', () => {
     if (fsState && !fsTopmostSuspended) setFullscreenTopmost(mainWindow, true, { raise: true });
+    else if (!fsState) schedulePinReassertOnBlur(mainWindow);
   });
   mainWindow.on('focus', () => {
+    if (trayFlasher) trayFlasher.acknowledgeCurrent();
     if (fsState) setFullscreenTopmost(mainWindow, true);
+    else if (loadSettings().alwaysOnTop) reassertUserAlwaysOnTop(mainWindow);
   });
 
   mainWindow.on('restore', () => wakeGameView());
@@ -1637,6 +1704,7 @@ function createWindow() {
 
   mainWindow.on('closed', () => {
     stopFsTopmostWatch();
+    stopPinWatch();
     fsState = null;
     fsTopmostSuspended = false;
     if (wakeTimer) { clearTimeout(wakeTimer); wakeTimer = null; }
@@ -2128,9 +2196,9 @@ function setupIpc() {
     if (!isLocalIpcSender(e, 'tray-menu.html')) return;
     closeTrayMenu();
   });
-  ipcMain.on('ready-eggs-count', (e, count) => {
+  ipcMain.on('tray-alert-state', (e, payload) => {
     if (!isGameIpcSender(e)) return;
-    updateReadyEggsBadge(count);
+    updateTrayAlertState(payload);
   });
 
   ipcMain.on('game-theme-changed', (e, theme) => {
@@ -2269,6 +2337,10 @@ app.on('before-quit', () => {
   if (trayMenuWindow && !trayMenuWindow.isDestroyed()) {
     try { trayMenuWindow.destroy(); } catch (_) {}
     trayMenuWindow = null;
+  }
+  if (trayFlasher) {
+    try { trayFlasher.dispose(); } catch (_) {}
+    trayFlasher = null;
   }
   if (tray && !tray.isDestroyed()) {
     try { tray.destroy(); } catch (_) {}
