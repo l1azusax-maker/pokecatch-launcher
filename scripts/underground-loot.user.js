@@ -69,8 +69,11 @@
   let enabled = true;
   let lastSlotsSlice = null;
   let lastParsedSlots = [];
-  let observer = null;
-  let syncTimer = 0;
+  let lastStorageReadAt = 0;
+  let saveDirty = true;
+  let screenObserver = null;
+  let tickTimer = 0;
+  let clickSyncTimer = 0;
 
   function ensureStyle() {
     if (document.getElementById(STYLE_ID)) return;
@@ -130,7 +133,13 @@
     return '[]';
   }
 
-  function readUnderSlots() {
+  function readUnderSlots(force = false) {
+    const now = Date.now();
+    if (!force && !saveDirty && now - lastStorageReadAt < 15000) {
+      return lastParsedSlots;
+    }
+    saveDirty = false;
+    lastStorageReadAt = now;
     try {
       const raw = localStorage.getItem(SAVE_KEY);
       if (!raw) {
@@ -381,61 +390,114 @@
     }
   }
 
-  function scheduleSync(delayMs = 80) {
-    if (syncTimer) return;
-    syncTimer = setTimeout(() => {
-      syncTimer = 0;
+  function stopTick() {
+    if (tickTimer) {
+      clearInterval(tickTimer);
+      tickTimer = 0;
+    }
+  }
+
+  function ensureTick() {
+    const active = enabled && !!document.querySelector('#screen-underground.active');
+    if (!active) {
+      stopTick();
+      return;
+    }
+    if (!tickTimer) {
+      // 与游戏地下通道 1 秒刷新节奏同步，绝不监听 .ug-scene / .ug-fx 子树动画变更。
+      tickTimer = setInterval(() => {
+        if (!enabled || !document.querySelector('#screen-underground.active')) {
+          stopTick();
+          return;
+        }
+        if (document.hidden) return;
+        syncNow();
+      }, 1000);
+    }
+  }
+
+  function scheduleQuickSync(delayMs = 120) {
+    if (clickSyncTimer) clearTimeout(clickSyncTimer);
+    clickSyncTimer = setTimeout(() => {
+      clickSyncTimer = 0;
       syncNow();
+      ensureTick();
     }, delayMs);
   }
 
+  function hookSaveWrite() {
+    try {
+      const proto = Storage.prototype;
+      if (!proto.__pcUgSaveHooked) {
+        const origSetItem = proto.setItem;
+        proto.setItem = function (key, value) {
+          const res = origSetItem.apply(this, arguments);
+          if (this === window.localStorage && key === SAVE_KEY) {
+            saveDirty = true;
+          }
+          return res;
+        };
+        proto.__pcUgSaveHooked = true;
+      }
+    } catch (_) {}
+  }
+
   function startObserver() {
-    if (observer) return;
-    const root = document.getElementById('screen-underground') || document.body || document.documentElement;
-    if (!root) return;
-    observer = new MutationObserver((mutations) => {
+    if (screenObserver) return;
+    const screen = document.getElementById('screen-underground');
+    if (!screen) return;
+    // 只监听 #screen-underground 自身 class（切入/切出标签页），不开启 subtree，避免干扰战斗/挖掘动画。
+    screenObserver = new MutationObserver(() => {
       if (!enabled) return;
-      // 忽略我们自己插入/删除预览节点触发的变更，避免无谓循环
-      for (let i = 0; i < mutations.length; i++) {
-        const m = mutations[i];
-        if (m.type === 'attributes') {
-          scheduleSync(40);
-          return;
-        }
-        const nodes = [...m.addedNodes, ...m.removedNodes];
-        if (nodes.some((n) => !(n && n.nodeType === 1 && n.classList && n.classList.contains(PREVIEW_CLASS)))) {
-          scheduleSync(40);
-          return;
-        }
+      if (screen.classList.contains('active')) {
+        saveDirty = true;
+        scheduleQuickSync(60);
+      } else {
+        stopTick();
       }
     });
-    observer.observe(root, {
-      childList: true,
-      subtree: true,
+    screenObserver.observe(screen, {
       attributes: true,
       attributeFilter: ['class'],
     });
+    screen.addEventListener('click', () => {
+      if (enabled) scheduleQuickSync(120);
+    }, { passive: true });
   }
 
   window.__pcUndergroundLootPreview = {
     set(next) {
       enabled = next !== false;
-      if (enabled) syncNow();
-      else clearAllPreviews();
+      if (enabled) {
+        saveDirty = true;
+        syncNow();
+        ensureTick();
+      } else {
+        stopTick();
+        clearAllPreviews();
+      }
     },
     sync: syncNow,
     isEnabled: () => enabled,
   };
+
+  hookSaveWrite();
+  const onStorage = (e) => {
+    if (e.key === SAVE_KEY || e.key === null) saveDirty = true;
+  };
+  window.addEventListener('storage', onStorage);
 
   Promise.resolve(L.getSettings && L.getSettings())
     .then((s) => {
       enabled = !s || s.undergroundPreview !== false;
       startObserver();
       syncNow();
+      ensureTick();
     })
     .catch(() => {
       startObserver();
       syncNow();
+      ensureTick();
     });
 
   if (typeof L.onSettingsChanged === 'function') {
@@ -448,10 +510,12 @@
   }
 
   window.addEventListener('pagehide', () => {
-    if (syncTimer) clearTimeout(syncTimer);
-    if (observer) {
-      observer.disconnect();
-      observer = null;
+    stopTick();
+    if (clickSyncTimer) clearTimeout(clickSyncTimer);
+    window.removeEventListener('storage', onStorage);
+    if (screenObserver) {
+      screenObserver.disconnect();
+      screenObserver = null;
     }
   }, { once: true });
 })();

@@ -666,6 +666,8 @@ test('underground-loot userscript previews unobtained rewards with gray mask and
     },
     setTimeout: (fn) => { fn(); return 1; },
     clearTimeout: () => {},
+    setInterval: () => 1,
+    clearInterval: () => {},
     MutationObserver: class { observe() {} disconnect() {} },
     document: {
       head: headEl,
@@ -686,6 +688,7 @@ test('underground-loot userscript previews unobtained rewards with gray mask and
       createDocumentFragment: () => ({ isFragment: true, children: [], appendChild(c) { this.children.push(c); return c; } }),
     },
     addEventListener: () => {},
+    removeEventListener: () => {},
     window: null,
   };
   sandbox.window = sandbox;
