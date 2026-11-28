@@ -1,6 +1,6 @@
 {
   "name": "pokecatch-launcher",
-  "version": "1.1.7",
+  "version": "1.1.8",
   "description": "Poke'Catch 轻量 PC 启动器",
   "main": "main.js",
   "author": "PokeCatch Launcher",

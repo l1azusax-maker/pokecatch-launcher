@@ -717,3 +717,62 @@ test('underground-loot userscript previews unobtained rewards with gray mask and
   sandbox.window.__pcUndergroundLootPreview.set(false);
   assert.equal(lootBox.children.filter((c) => c.classList.contains('pc-ug-prev')).length, 0);
 });
+
+test('builtin-optimize guards 0x0 createImageData and self-heals stuck underground bay._wiping', () => {
+  const scriptSrc = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'builtin-optimize.user.js'), 'utf8');
+  let now = 1000;
+  let tickFn = null;
+  let ditherRemoved = false;
+  const removedClasses = [];
+  const stuckBay = {
+    _wiping: true,
+    querySelector: (sel) => (sel === '.ug-scene' ? {
+      classList: { remove: (...cls) => removedClasses.push(...cls) },
+      querySelectorAll: (q) => (q === 'canvas.fx-dither' ? [{ remove: () => { ditherRemoved = true; } }] : []),
+    } : null),
+  };
+  const createCalls = [];
+  function FakeCtx2D() {}
+  FakeCtx2D.prototype.createImageData = function (w, h) {
+    createCalls.push([w, h]);
+    if (w <= 0 || h <= 0) throw new RangeError('IndexSizeError');
+    return { width: w, height: h };
+  };
+
+  const sandbox = {
+    Date: { now: () => now },
+    Math,
+    WeakMap,
+    CanvasRenderingContext2D: FakeCtx2D,
+    setInterval: (fn) => { tickFn = fn; return 1; },
+    document: {
+      readyState: 'complete',
+      hidden: false,
+      head: { appendChild() {} },
+      documentElement: { appendChild() {} },
+      getElementById: () => null,
+      createElement: () => ({ id: '', textContent: '' }),
+      querySelector: (sel) => (sel === '#screen-underground.active' ? {
+        querySelectorAll: (q) => (q === '.ug-bay[data-bay]' ? [stuckBay] : []),
+      } : null),
+    },
+    window: null,
+  };
+  sandbox.window = sandbox;
+  vm.runInNewContext(scriptSrc, sandbox);
+
+  // 1. 0x0 createImageData 不再抛 IndexSizeError，而是安全钳制到 1x1
+  const ctx = new FakeCtx2D();
+  const img = ctx.createImageData(0, 0);
+  assert.deepEqual(img, { width: 1, height: 1 });
+  assert.deepEqual(createCalls[0], [1, 1]);
+
+  // 2. _wiping 异常卡住超过 3.5 秒后自动复位并清理残留 fx-dither
+  tickFn();
+  assert.equal(stuckBay._wiping, true);
+  now += 4000;
+  tickFn();
+  assert.equal(stuckBay._wiping, false);
+  assert.equal(ditherRemoved, true);
+  assert.deepEqual(removedClasses, ['leaving', 'entering']);
+});

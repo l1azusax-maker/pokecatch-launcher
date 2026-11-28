@@ -49,4 +49,53 @@
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', apply, { once: true });
   }
+
+  // 修复游戏地下通道转场（CaptureFX.dither）在卡片隐藏/最小化尺寸为 0x0 时
+  // 调用 createImageData(0, 0) 抛出 IndexSizeError，导致 bay._wiping 永久卡在 true、
+  // 探险队伍动画静止且探索结束后不弹出「领取」界面的问题。
+  try {
+    const proto = window.CanvasRenderingContext2D && window.CanvasRenderingContext2D.prototype;
+    if (proto && typeof proto.createImageData === 'function' && !proto.__pcSafeCreateImageData) {
+      const origCreateImageData = proto.createImageData;
+      proto.createImageData = function (sw, sh) {
+        if (typeof sw === 'number' && typeof sh === 'number' && (sw <= 0 || sh <= 0)) {
+          return origCreateImageData.call(this, Math.max(1, sw || 0), Math.max(1, sh || 0));
+        }
+        return origCreateImageData.apply(this, arguments);
+      };
+      proto.__pcSafeCreateImageData = true;
+    }
+  } catch (_) {}
+
+  // 兜底自愈：若某个 .ug-bay 的 _wiping 异常持续超过 3.5 秒，自动复位并清理残留转场画布。
+  const wipeSince = new WeakMap();
+  setInterval(() => {
+    try {
+      if (document.hidden) return;
+      const screen = document.querySelector('#screen-underground.active');
+      if (!screen) return;
+      const bays = screen.querySelectorAll('.ug-bay[data-bay]');
+      const now = Date.now();
+      for (let i = 0; i < bays.length; i++) {
+        const bay = bays[i];
+        if (bay._wiping) {
+          const since = wipeSince.get(bay);
+          if (!since) {
+            wipeSince.set(bay, now);
+          } else if (now - since > 3500) {
+            bay._wiping = false;
+            wipeSince.delete(bay);
+            const scene = bay.querySelector('.ug-scene');
+            if (scene) {
+              scene.classList.remove('leaving', 'entering');
+              const dithers = scene.querySelectorAll('canvas.fx-dither');
+              for (let j = 0; j < dithers.length; j++) dithers[j].remove();
+            }
+          }
+        } else if (wipeSince.has(bay)) {
+          wipeSince.delete(bay);
+        }
+      }
+    } catch (_) {}
+  }, 1500);
 })();
