@@ -114,6 +114,7 @@
     settings: {
       keepActive: true,
       shinyEgg: true,
+      undergroundPreview: true,
       minimizeToTray: false,
     },
     scripts: [],
@@ -208,11 +209,15 @@
       if (key === 'shinyEgg' && window.__pcShinyEggPreview) {
         try { window.__pcShinyEggPreview.set(on); } catch (_) {}
       }
+      if (key === 'undergroundPreview' && window.__pcUndergroundLootPreview) {
+        try { window.__pcUndergroundLootPreview.set(on); } catch (_) {}
+      }
       // 仅提交当前开关字段，避免覆盖标题栏/托盘刚改动的静音或置顶状态。
       Promise.resolve(L.saveSettings({ [key]: on })).then((ok) => {
         if (ok === false) toast('保存失败');
         else if (key === 'keepActive') toast(on ? '最小化时保持在线' : '最小化时将按离线处理');
         else if (key === 'shinyEgg') toast(on ? '已开启异色蛋预览' : '已关闭异色蛋预览');
+        else if (key === 'undergroundPreview') toast(on ? '已开启地下掉落预览' : '已关闭地下掉落预览');
         else if (key === 'minimizeToTray') toast(on ? '关闭窗口时将收进系统托盘' : '关闭窗口时直接退出启动器');
       }).catch(() => toast('保存失败'));
     };
@@ -292,6 +297,7 @@
         <h5>启动器设置</h5>
         <div class="op-card">
           ${switchRow('shinyEgg', '提前显示异色蛋', '培育屋的蛋按存档直接判定并标出异色（只读存档，不改任何数据）', s.shinyEgg !== false)}
+          ${switchRow('undergroundPreview', '提前预览地下掉落', '地下通道任务开始后提前显示本轮将获得的道具，未获得部分叠加偏灰色遮罩', s.undergroundPreview !== false)}
           ${switchRow('keepActive', '最小化时保持在线', '最小化或被遮挡时，游戏不会判定你离开，也不结算离线进度', s.keepActive !== false)}
           ${switchRow('minimizeToTray', '关闭窗口时收进托盘', '点击右上角关闭按钮后隐藏到系统托盘继续挂机，可在托盘右键退出', !!s.minimizeToTray)}
         </div>
@@ -333,10 +339,14 @@
     state.settings = {
       keepActive: s.keepActive !== false,
       shinyEgg: s.shinyEgg !== false,
+      undergroundPreview: s.undergroundPreview !== false,
       minimizeToTray: s.minimizeToTray === true,
     };
     if (window.__pcShinyEggPreview) {
       try { window.__pcShinyEggPreview.set(state.settings.shinyEgg); } catch (_) {}
+    }
+    if (window.__pcUndergroundLootPreview) {
+      try { window.__pcUndergroundLootPreview.set(state.settings.undergroundPreview); } catch (_) {}
     }
   }
 

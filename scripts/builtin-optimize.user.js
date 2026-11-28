@@ -17,12 +17,29 @@
 
   const STYLE_ID = 'pc-optimize-style';
 
+  const CSS = `
+    html { -webkit-font-smoothing: antialiased; }
+    /* 消除弹窗全屏实时高斯模糊合成开销，保留原有半透明暗色遮罩 */
+    .modal-root {
+      backdrop-filter: none !important;
+      -webkit-backdrop-filter: none !important;
+    }
+    /* 将设置弹窗滚动容器提升为独立合成层并隔离重绘，避免滚轮滚动连带整窗重绘 */
+    .opt-modal {
+      contain: layout style;
+    }
+    .opt-modal .gd-page {
+      contain: layout paint;
+      will-change: scroll-position;
+    }
+  `;
+
   function apply() {
     try {
       if (document.getElementById(STYLE_ID)) return;
       const st = document.createElement('style');
       st.id = STYLE_ID;
-      st.textContent = 'html { -webkit-font-smoothing: antialiased; }';
+      st.textContent = CSS;
       (document.head || document.documentElement).appendChild(st);
     } catch (_) {}
   }

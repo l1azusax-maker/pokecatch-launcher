@@ -1,6 +1,6 @@
 {
   "name": "pokecatch-launcher",
-  "version": "1.1.5",
+  "version": "1.1.6",
   "description": "Poke'Catch 轻量 PC 启动器",
   "main": "main.js",
   "author": "PokeCatch Launcher",
@@ -12,7 +12,7 @@
   "homepage": "https://github.com/l1azusax-maker/pokecatch-launcher",
   "scripts": {
     "start": "electron .",
-    "check": "node --check main.js && node --check preload.js && node --check preload-shell.js && node --check preload-notice.js && node --check preload-tray-menu.js && node --check lib/fs-atomic.js && node --check lib/url-policy.js && node --check lib/settings-store.js && node --check lib/script-utils.js && node --check lib/script-manager.js && node --check lib/concurrency.js && node --check lib/auth-bridge.js && node --check lib/app-updater.js && node --check lib/memory-manager.js && node --check lib/tray-alert.js && node --check scripts/launcher-tab.user.js && node --check scripts/shiny-egg.user.js && node --check scripts/builtin-optimize.user.js",
+    "check": "node --check main.js && node --check preload.js && node --check preload-shell.js && node --check preload-notice.js && node --check preload-tray-menu.js && node --check lib/fs-atomic.js && node --check lib/url-policy.js && node --check lib/settings-store.js && node --check lib/script-utils.js && node --check lib/script-manager.js && node --check lib/concurrency.js && node --check lib/auth-bridge.js && node --check lib/app-updater.js && node --check lib/memory-manager.js && node --check lib/tray-alert.js && node --check scripts/launcher-tab.user.js && node --check scripts/shiny-egg.user.js && node --check scripts/underground-loot.user.js && node --check scripts/builtin-optimize.user.js",
     "test": "npm run check && node --test",
     "dist": "electron-builder"
   },

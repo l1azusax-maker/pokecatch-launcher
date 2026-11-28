@@ -60,6 +60,7 @@ test('settings-store sanitizes legacy and removed keys', async (t) => {
   assert.deepEqual(loaded, {
     keepActive: false,
     shinyEgg: true,
+    undergroundPreview: true,
     minimizeToTray: true,
     alwaysOnTop: true,
     muted: true,
@@ -559,4 +560,157 @@ test('tray-alert generates valid PNG, extracts schedules, formats 4-line tooltip
     "Poke'Catch 启动器\n金钱总数：95,000\n孵化完成：0颗蛋\n挖矿完成：0个队伍"
   );
   flasher.dispose();
+});
+
+test('underground-loot userscript previews unobtained rewards with gray mask and skips full-save JSON.parse', async () => {
+  const scriptSrc = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'underground-loot.user.js'), 'utf8');
+  const now = 1_700_000_000_000;
+  const start = now - 5 * 2800; // step = 5 => floor 1 cleared (at[0]=3), floors 2..3 still pending
+  const saveObj = {
+    bigPadding: 'x'.repeat(50000),
+    under: {
+      slots: [
+        {
+          id: 'ug1',
+          bay: 0,
+          start,
+          end: now + 60_000,
+          res: {
+            floors: 3,
+            at: [3, 10, 20],
+            loot: [
+              [{ k: 'money', n: 150 }, { k: 'item', id: 'rare-candy' }],
+              [{ k: 'money', n: 300 }, { k: 'geode', t: 3 }, { k: 'item', id: 'rare-candy' }],
+              [{ k: 'money', n: 450 }, { k: 'fossil', id: 138, lv: 20, reg: 'kanto' }, { k: 'plate', type: 'fire', t: 2 }, { k: 'shards', n: 8 }],
+            ],
+          },
+        },
+      ],
+    },
+  };
+  const rawSave = JSON.stringify(saveObj);
+  const parseSizes = [];
+  const origParse = JSON.parse;
+
+  function makeEl(tag) {
+    const el = {
+      tagName: String(tag || 'DIV').toUpperCase(),
+      nodeType: 1,
+      className: '',
+      attributes: Object.create(null),
+      dataset: Object.create(null),
+      children: [],
+      textContent: '',
+      title: '',
+      src: '',
+      alt: '',
+      parentNode: null,
+      classList: {
+        contains: (c) => String(el.className || '').split(/\s+/).includes(c),
+      },
+      setAttribute(k, v) { this.attributes[k] = String(v); },
+      getAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attributes, k) ? this.attributes[k] : null; },
+      appendChild(child) {
+        if (child && child.isFragment) {
+          for (const c of child.children) this.appendChild(c);
+          return child;
+        }
+        child.parentNode = this;
+        this.children.push(child);
+        return child;
+      },
+      remove() {
+        if (!this.parentNode) return;
+        const idx = this.parentNode.children.indexOf(this);
+        if (idx >= 0) this.parentNode.children.splice(idx, 1);
+        this.parentNode = null;
+      },
+      querySelector(sel) { return this.querySelectorAll(sel)[0] || null; },
+      querySelectorAll(sel) {
+        if (sel === '.pc-ug-prev') return this.children.filter((c) => c.classList.contains('pc-ug-prev'));
+        if (sel.startsWith('[data-ftip=')) return [];
+        return [];
+      },
+    };
+    return el;
+  }
+
+  const lootBox = makeEl('div');
+  lootBox.className = 'ug-loot';
+  lootBox.setAttribute('data-p', 'loot');
+  const bayEl = {
+    getAttribute: (k) => (k === 'data-bay' ? '0' : null),
+    querySelector: (sel) => (sel === '.ug-loot[data-p="loot"]' ? lootBox : null),
+  };
+  const screenEl = {
+    querySelectorAll: (sel) => (sel === '.ug-bay[data-bay]' ? [bayEl] : []),
+  };
+  const headEl = makeEl('head');
+  const styles = new Map();
+
+  const sandbox = {
+    console,
+    Date: { now: () => now },
+    Math,
+    Number,
+    String,
+    Array,
+    Object,
+    Promise,
+    JSON: {
+      parse: (s) => { parseSizes.push(s.length); return origParse(s); },
+      stringify: JSON.stringify,
+    },
+    localStorage: {
+      getItem: (k) => (k === 'gachamon-save-v1' ? rawSave : null),
+    },
+    setTimeout: (fn) => { fn(); return 1; },
+    clearTimeout: () => {},
+    MutationObserver: class { observe() {} disconnect() {} },
+    document: {
+      head: headEl,
+      documentElement: headEl,
+      getElementById: (id) => styles.get(id) || null,
+      querySelector: (sel) => (sel === '#screen-underground.active' ? screenEl : null),
+      querySelectorAll: (sel) => (sel === '#screen-underground .ug-loot[data-p="loot"]' ? [lootBox] : []),
+      createElement: (tag) => {
+        const el = makeEl(tag);
+        if (tag === 'style') {
+          Object.defineProperty(el, 'id', {
+            set(v) { this._id = v; styles.set(v, this); },
+            get() { return this._id; },
+          });
+        }
+        return el;
+      },
+      createDocumentFragment: () => ({ isFragment: true, children: [], appendChild(c) { this.children.push(c); return c; } }),
+    },
+    addEventListener: () => {},
+    window: null,
+  };
+  sandbox.window = sandbox;
+  sandbox.launcher = {
+    getSettings: () => Promise.resolve({ undergroundPreview: true }),
+    onSettingsChanged: () => {},
+  };
+
+  vm.runInNewContext(scriptSrc, sandbox);
+  await new Promise((r) => setTimeout(r, 10));
+
+  // 确认只解析了 under.slots 局部切片，没有解析 50KB 整份存档
+  assert.equal(parseSizes.length, 1);
+  assert.ok(parseSizes[0] < 1000);
+
+  // 确认按原生排序（金钱 + 化石9 > 石板8 > 传说晶洞7 > 糖果2 > 碎片1）渲染了带 pc-ug-prev 遮罩类的预览节点
+  const prevNodes = lootBox.children.filter((c) => c.classList.contains('pc-ug-prev'));
+  assert.equal(prevNodes.length, 6);
+  assert.equal(prevNodes[0].textContent, '+750 ₽'); // floor 2 (300) + floor 3 (450)
+  assert.deepEqual(
+    prevNodes.slice(1).map((n) => n.getAttribute('data-ftip')),
+    ['fossil:138', 'plate:fire', 'geode:3', 'item:rare-candy', 'item:event-shard']
+  );
+
+  // 关闭开关后立刻清理所有预览节点
+  sandbox.window.__pcUndergroundLootPreview.set(false);
+  assert.equal(lootBox.children.filter((c) => c.classList.contains('pc-ug-prev')).length, 0);
 });

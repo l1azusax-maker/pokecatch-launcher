@@ -416,7 +416,7 @@ function executeInjectedScript(wc, code) {
 async function injectScripts(wc) {
   if (!wc || wc.isDestroyed()) return;
   const builtinDir = path.join(__dirname, 'scripts');
-  const builtinFiles = ['launcher-tab.user.js', 'shiny-egg.user.js', 'builtin-optimize.user.js'];
+  const builtinFiles = ['launcher-tab.user.js', 'shiny-egg.user.js', 'underground-loot.user.js', 'builtin-optimize.user.js'];
   for (const f of builtinFiles) {
     const fp = path.join(builtinDir, f);
     try {
@@ -682,9 +682,12 @@ function applyAudioMute(wc, settings) {
   try { wc.setAudioMuted(muted); } catch (_) {}
 }
 
+const USER_PIN_LEVEL = 'screen-saver';
+const WM_WINDOWPOSCHANGED = 0x0047;
+
 let pinWatchTimer = null;
 let pinBlurTimer = null;
-let pinLevelFlip = false;
+let pinRestoring = false;
 
 function stopPinWatch() {
   if (pinWatchTimer) { clearInterval(pinWatchTimer); pinWatchTimer = null; }
@@ -701,14 +704,62 @@ function shouldGuardUserPin(win) {
   return true;
 }
 
-// 微信/QQ 等全屏截图覆盖工具退出后，Windows 可能剥离窗口的 WS_EX_TOPMOST 或刷新 Z-order，
-// 而 Electron 内部缓存同一 level 时会跳过 SetWindowPos。
-// 在同属 TOPMOST 的 floating / torn-off-menu 之间交替，可零闪烁、不抢焦点地强制刷新置顶层级。
+// 微信/QQ 等第三方截图工具可能会对 WS_EX_TOPMOST 窗口调用 SetWindowPos(HWND_BOTTOM/HWND_NOTOPMOST)，
+// 直接把窗口压到最底层并剥离置顶标志。
+// 在 Electron(Win32) 中，外部把窗口压到 HWND_BOTTOM 后仅调用 setAlwaysOnTop(true, level) 会被内部状态缓存跳过，
+// 必须执行 false -> moveTop() -> true(screen-saver) 才能不抢焦点地把窗口立刻拉回置顶层。
+function forceRestoreAlwaysOnTop(win, level = USER_PIN_LEVEL) {
+  if (!win || win.isDestroyed() || pinRestoring) return;
+  pinRestoring = true;
+  try {
+    win.setAlwaysOnTop(false);
+    win.moveTop();
+    win.setAlwaysOnTop(true, level);
+  } catch (_) {} finally {
+    pinRestoring = false;
+  }
+}
+
+function installTopmostWindowHook(win) {
+  if (process.platform !== 'win32' || !win || win.isDestroyed()) return;
+  if (typeof win.hookWindowMessage !== 'function') return;
+  try {
+    win.hookWindowMessage(WM_WINDOWPOSCHANGED, () => {
+      if (pinRestoring || !win || win.isDestroyed()) return;
+      const needFs = !!(fsState && !fsTopmostSuspended && win.isVisible() && !win.isMinimized());
+      const needPin = !needFs && shouldGuardUserPin(win);
+      if (!needFs && !needPin) return;
+      let isTop = true;
+      try { isTop = win.isAlwaysOnTop(); } catch (_) { return; }
+      if (isTop) return;
+      pinRestoring = true;
+      setTimeout(() => {
+        try {
+          if (!win || win.isDestroyed()) return;
+          const stillNeedFs = !!(fsState && !fsTopmostSuspended && win.isVisible() && !win.isMinimized());
+          const stillNeedPin = !stillNeedFs && shouldGuardUserPin(win);
+          if (!stillNeedFs && !stillNeedPin) return;
+          if (!win.isAlwaysOnTop()) {
+            win.setAlwaysOnTop(false);
+            win.moveTop();
+            win.setAlwaysOnTop(true, USER_PIN_LEVEL);
+          }
+        } catch (_) {} finally {
+          pinRestoring = false;
+        }
+      }, 0);
+    });
+  } catch (err) {
+    dbg('[pin] hookWindowMessage failed', err && err.message ? err.message : String(err));
+  }
+}
+
 function reassertUserAlwaysOnTop(win) {
   if (!shouldGuardUserPin(win)) return;
   try {
-    pinLevelFlip = !pinLevelFlip;
-    win.setAlwaysOnTop(true, pinLevelFlip ? 'torn-off-menu' : 'floating');
+    if (!win.isAlwaysOnTop()) {
+      forceRestoreAlwaysOnTop(win, USER_PIN_LEVEL);
+    }
   } catch (_) {}
 }
 
@@ -722,11 +773,11 @@ function startPinWatch(win) {
     }
     if (!shouldGuardUserPin(mainWindow)) return;
     try {
-      if (!mainWindow.isAlwaysOnTop() || !mainWindow.isFocused()) {
-        reassertUserAlwaysOnTop(mainWindow);
+      if (!mainWindow.isAlwaysOnTop()) {
+        forceRestoreAlwaysOnTop(mainWindow, USER_PIN_LEVEL);
       }
     } catch (_) {}
-  }, 2000);
+  }, 1000);
   if (typeof pinWatchTimer.unref === 'function') pinWatchTimer.unref();
 }
 
@@ -736,7 +787,7 @@ function schedulePinReassertOnBlur(win) {
   pinBlurTimer = setTimeout(() => {
     pinBlurTimer = null;
     reassertUserAlwaysOnTop(win);
-  }, 250);
+  }, 150);
   if (typeof pinBlurTimer.unref === 'function') pinBlurTimer.unref();
 }
 
@@ -744,7 +795,14 @@ function applyAlwaysOnTop(win, settings) {
   if (!win || win.isDestroyed()) return;
   if (fsState) return;
   const on = !!(settings || loadSettings()).alwaysOnTop;
-  try { win.setAlwaysOnTop(on, 'floating'); } catch (_) {}
+  try {
+    if (on) {
+      win.setAlwaysOnTop(true, USER_PIN_LEVEL);
+      if (!win.isAlwaysOnTop()) forceRestoreAlwaysOnTop(win, USER_PIN_LEVEL);
+    } else {
+      win.setAlwaysOnTop(false);
+    }
+  } catch (_) {}
   if (on) {
     startPinWatch(win);
   } else {
@@ -839,7 +897,8 @@ function closeTrayMenu() {
 function keepTrayMenuOnTop() {
   if (!trayMenuWindow || trayMenuWindow.isDestroyed() || !trayMenuWindow.isVisible()) return;
   try {
-    trayMenuWindow.setAlwaysOnTop(true, 'pop-up-menu');
+    trayMenuWindow.setAlwaysOnTop(true, USER_PIN_LEVEL);
+    trayMenuWindow.moveTop();
     trayMenuWindow.focus();
   } catch (_) {}
 }
@@ -918,8 +977,9 @@ function openTrayMenuAtCursor() {
     syncTrayMenuState();
     try {
       trayMenuWindow.setBounds({ x, y, width: TRAY_MENU_W, height: TRAY_MENU_H });
-      trayMenuWindow.setAlwaysOnTop(true, 'pop-up-menu');
+      trayMenuWindow.setAlwaysOnTop(true, USER_PIN_LEVEL);
       trayMenuWindow.show();
+      trayMenuWindow.moveTop();
       trayMenuWindow.focus();
     } catch (_) {}
   };
@@ -1052,7 +1112,7 @@ function startFsTopmostWatch(win) {
   fsTopmostTimer = setInterval(() => {
     if (!fsState || fsTopmostSuspended || !win || win.isDestroyed()) { stopFsTopmostWatch(); return; }
     try {
-      if (!win.isAlwaysOnTop()) win.setAlwaysOnTop(true, 'screen-saver');
+      if (!win.isAlwaysOnTop()) forceRestoreAlwaysOnTop(win, USER_PIN_LEVEL);
     } catch (_) { stopFsTopmostWatch(); }
   }, 1000);
   if (fsTopmostTimer && typeof fsTopmostTimer.unref === 'function') fsTopmostTimer.unref();
@@ -1563,6 +1623,7 @@ function createWindow() {
   lastShapeSig = '';
   applyMaximizedClip();
   applyAlwaysOnTop(mainWindow, initialSettings);
+  installTopmostWindowHook(mainWindow);
 
   mainWindow.loadFile(path.join(__dirname, 'assets', 'shell.html'), { query: { theme: initialTheme } });
 
